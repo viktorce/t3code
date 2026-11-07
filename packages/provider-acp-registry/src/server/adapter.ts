@@ -124,7 +124,9 @@ export function acpRegistryPromptFailure(agentId: string, cause: unknown) {
           class:
             agentId === "mistral-vibe" && cause.code === MISTRAL_VIBE_RATE_LIMITED
               ? ("usage_limit" as const)
-              : ("provider_error" as const),
+              : /Connection error|ENOTFOUND|ECONNRESET|ETIMEDOUT/u.test(cause.errorMessage)
+                ? ("transport_error" as const)
+                : ("provider_error" as const),
         }
       : { class: "provider_error" as const }),
   });

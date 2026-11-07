@@ -48,6 +48,8 @@ interface ComposerPrimaryActionsProps {
   isEditingQueuedMessage?: boolean;
   onSubmitMessage?: MouseEventHandler<HTMLButtonElement>;
   onResume?: () => void;
+  resumeLabel?: string | undefined;
+  sendLabel?: string | undefined;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
@@ -103,6 +105,8 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   isEditingQueuedMessage = false,
   onSubmitMessage,
   onResume,
+  resumeLabel = "Resume thread",
+  sendLabel = "Submit message",
   onPreviousPendingQuestion,
   onInterrupt,
   onImplementPlanInNewThread,
@@ -279,7 +283,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   const compactsBeforeSend = compactTokens !== null && !keepFullHistory;
 
   const submitLabel = showResume
-    ? "Resume thread"
+    ? resumeLabel
     : isEditingQueuedMessage
       ? "Update queued message"
       : compactsBeforeSend
@@ -288,7 +292,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
           ? "Queue message"
           : isRunning
             ? "Steer message"
-            : "Submit message";
+            : sendLabel;
   const submitStatus = isEnvironmentUnavailable
     ? "Environment disconnected"
     : (sendDisabledReason ??

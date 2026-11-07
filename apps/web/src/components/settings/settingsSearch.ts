@@ -449,6 +449,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["usage quota rate limit reset recover continue"],
   },
   {
+    id: "auto-resume-connection-errors",
+    title: "Resume after connection errors",
+    to: "/settings/threads",
+    searchTerms: ["connection network offline online internet unreachable dns recover continue"],
+  },
+  {
     id: "working-shelf",
     title: "Working section",
     to: "/settings/general",

@@ -23,6 +23,8 @@ export interface ComposerBannerStackItem {
   readonly actions?: ReactNode;
   readonly dismissLabel?: string;
   readonly onDismiss?: () => void;
+  /** Move the actions to a second line before the status text would truncate. */
+  readonly wrapActions?: boolean;
 }
 
 const GROUPS = ["environment", "attention"] as const;
@@ -182,7 +184,13 @@ function NoticeCard({
         <ComposerBanner.Icon className="h-(--composer-banner-icon-column) self-start">
           {item.icon}
         </ComposerBanner.Icon>
-        <ComposerBanner.Content className="whitespace-nowrap">
+        <ComposerBanner.Content
+          className={
+            item.wrapActions
+              ? "flex-none whitespace-nowrap @max-[400px]:flex-wrap"
+              : "whitespace-nowrap"
+          }
+        >
           <NoticeText
             detailsLabel={
               typeof item.title === "string"
@@ -200,7 +208,11 @@ function NoticeCard({
                   ? `Show details: ${item.title}`
                   : "Show notice details"
               }
-              className="w-0 min-w-0 grow truncate text-muted-foreground @max-[400px]:sr-only"
+              className={
+                item.wrapActions
+                  ? "min-w-0 truncate text-muted-foreground @max-[400px]:basis-full"
+                  : "w-0 min-w-0 grow truncate text-muted-foreground @max-[400px]:sr-only"
+              }
             >
               {item.description}
             </NoticeText>

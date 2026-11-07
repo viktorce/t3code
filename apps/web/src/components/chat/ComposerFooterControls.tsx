@@ -277,6 +277,8 @@ export const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryA
   isEditingQueuedMessage: boolean;
   onSubmitMessage: React.MouseEventHandler<HTMLButtonElement>;
   onResume: () => void;
+  resumeLabel?: string | undefined;
+  sendLabel?: string | undefined;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
@@ -323,6 +325,8 @@ export const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryA
         isEditingQueuedMessage={props.isEditingQueuedMessage}
         onSubmitMessage={props.onSubmitMessage}
         onResume={props.onResume}
+        resumeLabel={props.resumeLabel}
+        sendLabel={props.sendLabel}
         onPreviousPendingQuestion={props.onPreviousPendingQuestion}
         onInterrupt={props.onInterrupt}
         onImplementPlanInNewThread={props.onImplementPlanInNewThread}

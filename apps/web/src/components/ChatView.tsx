@@ -33,6 +33,9 @@ import { ThreadFind, ThreadFindCanvas } from "./chat/ThreadFindProvider";
 import { closeThreadFind, openThreadFind, useThreadFindOpen } from "./chat/threadFindStore";
 import { THREAD_FIND_BAR_RESERVED_HEIGHT } from "./chat/ThreadFindBar";
 import { usageLimitRecoveryBannerItem } from "./chat/UsageLimitRecoveryBanner";
+import { connectionRecoveryBannerItem } from "./chat/ConnectionRecoveryBanner";
+import { setConnectionMock, useConnectionMock } from "../mockups/connectionMock";
+import { useVisibleThreadShells as useMockVisibleThreadShells } from "../state/entities";
 import { resolveDraftHeroState } from "./ChatView.logic";
 import { useQueuedRunEdit } from "./chat/useQueuedRunEdit";
 import { recallCheckoutIsRepo, rememberCheckoutIsRepo } from "./ChatView.logic";
@@ -996,8 +999,25 @@ export default function ChatView(props: ChatViewProps) {
     recovery: activeThreadShell?.limitRecovery,
     snoozedUntil: activeThreadShell?.snoozedUntil,
   });
+  const connectionMock = useConnectionMock();
+  const connectionRecoveryRun =
+    serverRuntime?.status === "failed" && serverRuntime.lastErrorClass === "transport_error"
+      ? (activeThreadShell?.latestRun ?? null)
+      : null;
+  const connectionAffectedIds = useMockVisibleThreadShells()
+    .filter(
+      (shell) =>
+        shell.runtime?.status === "failed" &&
+        shell.runtime.lastErrorClass === "transport_error" &&
+        shell.environmentId === activeThreadShell?.environmentId &&
+        shell.runtime.providerInstanceId === serverRuntime?.providerInstanceId &&
+        shell.settledOverride !== "settled" &&
+        !connectionMock.resumed[shell.id],
+    )
+    .map((shell) => shell.id);
   const timelineThreadError =
-    limitRecoveryRun !== null && visibleThreadError === serverRuntime?.lastError
+    (limitRecoveryRun !== null || connectionRecoveryRun !== null) &&
+    visibleThreadError === serverRuntime?.lastError
       ? null
       : visibleThreadError;
 
@@ -2573,6 +2593,53 @@ export default function ChatView(props: ChatViewProps) {
           },
         })
       : null;
+  const connectionStoppedIds = connectionAffectedIds;
+  const connectionScheduledCount = connectionStoppedIds.filter(
+    (id) => connectionMock.autoResume[id],
+  ).length;
+  const mockLatency = () => new Promise((resolve) => setTimeout(resolve, 450));
+  const connectionRecoveryBanner =
+    connectionRecoveryRun !== null &&
+    activeThreadShell !== null &&
+    !connectionMock.resumed[activeThreadShell.id]
+      ? connectionRecoveryBannerItem({
+          runId: connectionRecoveryRun.runId,
+          machineName: "MacBook Pro",
+          providerName: "Anthropic",
+          stoppedAt: connectionRecoveryRun.completedAt ?? activeThreadShell.updatedAt,
+          reachable:
+            connectionMock.reachable && connectionMock.autoResume[activeThreadShell.id] !== true,
+          scheduled: connectionMock.autoResume[activeThreadShell.id] === true,
+          gaveUp: connectionMock.gaveUp[activeThreadShell.id] === true,
+          stoppedCount: connectionStoppedIds.length,
+          scheduledCount: connectionScheduledCount,
+          timestampFormat,
+          onAutoResumeChange: async (scope, autoResume) => {
+            await mockLatency();
+            setConnectionMock((current) => {
+              const next: Record<string, true> = { ...current.autoResume };
+              const gaveUp: Record<string, true> = { ...current.gaveUp };
+              for (const id of scope === "all" ? connectionStoppedIds : [activeThreadShell.id]) {
+                // Arming again starts a fresh count of attempts.
+                delete gaveUp[id];
+                if (autoResume) next[id] = true;
+                else delete next[id];
+              }
+              return { ...current, autoResume: next, gaveUp };
+            });
+          },
+          onResumeNow: async (scope) => {
+            await mockLatency();
+            setConnectionMock((current) => {
+              const resumed: Record<string, true> = { ...current.resumed };
+              for (const id of scope === "all" ? connectionStoppedIds : [activeThreadShell.id]) {
+                resumed[id] = true;
+              }
+              return { ...current, resumed };
+            });
+          },
+        })
+      : null;
   const composerBannerItems = (() => {
     const fallbackSelection = draftFallback?.selection;
     const defaultSelection =
@@ -2619,7 +2686,10 @@ export default function ChatView(props: ChatViewProps) {
             }),
           ]
         : [];
-    const limitRecoveryItems = limitRecoveryBanner === null ? [] : [limitRecoveryBanner];
+    const limitRecoveryItems = [
+      ...(limitRecoveryBanner === null ? [] : [limitRecoveryBanner]),
+      ...(connectionRecoveryBanner === null ? [] : [connectionRecoveryBanner]),
+    ];
     const extensionStatusBanner = extensionStatusBannerItem(
       deriveProviderExtensionStatuses(serverProjection),
     );
@@ -3007,7 +3077,31 @@ export default function ChatView(props: ChatViewProps) {
     });
   };
   const onWorktreeSetupWorkLocallyStable = useStableCallback(onWorktreeSetupWorkLocally);
-  const onComposerSendStable = useStableCallback(onSend);
+  // During an outage, Resume and Send arm the thread instead of starting a turn that would fail.
+  const composerArmsConnectionRecovery =
+    connectionRecoveryBanner !== null && !connectionMock.reachable;
+  const connectionArmedHere =
+    composerArmsConnectionRecovery &&
+    activeThreadShell !== null &&
+    connectionMock.autoResume[activeThreadShell.id] === true;
+  const onComposerSendStable = useStableCallback((...args: Parameters<typeof onSend>) => {
+    const prompt = composerRef.current?.readSnapshot().value.trim() ?? "";
+    if (!composerArmsConnectionRecovery || activeThreadShell === null || prompt.length === 0) {
+      return onSend(...args);
+    }
+    const threadId = activeThreadShell.id;
+    // Held like a queued message, then sent after "Continue where you left off."
+    setConnectionMock((current) => ({
+      ...current,
+      autoResume: { ...current.autoResume, [threadId]: true },
+      held: {
+        ...current.held,
+        [threadId]: [...(current.held[threadId] ?? []), { id: `held:${Date.now()}`, text: prompt }],
+      },
+    }));
+    useComposerDraftStore.getState().setPrompt(composerDraftTarget, "");
+    return Promise.resolve();
+  });
   const sendPreviewAnnotation = (
     annotation: PreviewAnnotationPayload,
     image: ComposerImageAttachment | null,
@@ -3015,7 +3109,18 @@ export default function ChatView(props: ChatViewProps) {
     void onSend(undefined, "auto", "foreground", { annotation, image });
   };
   const sendPreviewAnnotationStable = useStableCallback(sendPreviewAnnotation);
-  const onComposerResumeStable = useStableCallback(onResume);
+  const onComposerResumeStable = useStableCallback(() => {
+    if (!composerArmsConnectionRecovery || activeThreadShell === null) return onResume();
+    setConnectionMock((current) => {
+      const gaveUp: Record<string, true> = { ...current.gaveUp };
+      delete gaveUp[activeThreadShell.id];
+      return {
+        ...current,
+        autoResume: { ...current.autoResume, [activeThreadShell.id]: true },
+        gaveUp,
+      };
+    });
+  });
   const onComposerCompactContextStable = useStableCallback(onCompactContext);
   // Read from the projection the footer renders, so the scroll below sees the new message.
   const pendingGuestMessageIds =
@@ -3060,6 +3165,12 @@ export default function ChatView(props: ChatViewProps) {
           environmentId={activeThread.environmentId}
           threadId={activeThread.id}
           optimisticMessages={optimisticUserMessages}
+          heldMessages={connectionMock.held[activeThread.id] ?? []}
+          heldLabel={
+            connectionMock.autoResume[activeThread.id]
+              ? "Sends when MacBook Pro can reach Anthropic"
+              : "Sends when you resume"
+          }
           editingRunId={queuedRunEdit.editingRunId}
           editBlockedReason={queuedRunEditBlockedReason({
             openQuestionCount: pendingUserInputs.length,
@@ -3125,6 +3236,7 @@ export default function ChatView(props: ChatViewProps) {
   // something, by its own rule: an optimistic message stops counting once the server has it.
   const hasQueuedTurns =
     queuedRunCount > 0 ||
+    (activeThread ? (connectionMock.held[activeThread.id]?.length ?? 0) > 0 : false) ||
     optimisticUserMessages.some(
       (message) =>
         message.inputIntent === "queued_turn" &&
@@ -3652,7 +3764,10 @@ export default function ChatView(props: ChatViewProps) {
                                   queuedRunEdit.isSaving ||
                                   isResuming
                                 }
-                                canResume={resumableRunId !== null || hasHeldQueuedRuns}
+                                canResume={
+                                  (resumableRunId !== null || hasHeldQueuedRuns) &&
+                                  !connectionArmedHere
+                                }
                                 isRevertingCheckpoint={isRevertingCheckpoint}
                                 sendDisabledReason={
                                   !canOperateThread
@@ -3752,6 +3867,14 @@ export default function ChatView(props: ChatViewProps) {
                                 onCompactContext={onComposerCompactContextStable}
                                 onSend={onComposerSendStable}
                                 onResume={onComposerResumeStable}
+                                resumeLabel={
+                                  composerArmsConnectionRecovery
+                                    ? "Resume when reachable"
+                                    : undefined
+                                }
+                                sendLabel={
+                                  composerArmsConnectionRecovery ? "Send when reachable" : undefined
+                                }
                                 onInterrupt={onInterruptStable}
                                 onImplementPlanInNewThread={onImplementPlanInNewThreadStable}
                                 onSelectActivePendingUserInputOption={

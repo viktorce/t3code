@@ -1,3 +1,4 @@
+import { getConnectionMock } from "../mockups/connectionMock";
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
@@ -822,6 +823,8 @@ export type SidebarThreadStatus =
   | "waiting"
   | "failed"
   | "limited"
+  | "unreachable"
+  | "auto-resume"
   | "ready";
 
 export function shouldRecedeSidebarThread(input: {
@@ -839,7 +842,12 @@ export function shouldRecedeSidebarThread(input: {
   ) {
     return false;
   }
-  if (input.status === "preparing" || input.status === "working" || input.status === "waiting") {
+  if (
+    input.status === "preparing" ||
+    input.status === "working" ||
+    input.status === "waiting" ||
+    input.status === "auto-resume"
+  ) {
     return true;
   }
   if (input.status === "ready" || input.status === "approval") {
@@ -885,7 +893,13 @@ export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): Si
     return "waiting";
   }
   if (thread.runtime?.status === "failed") {
-    return thread.runtime.lastErrorClass === "usage_limit" ? "limited" : "failed";
+    return thread.runtime.lastErrorClass === "usage_limit"
+      ? "limited"
+      : thread.runtime.lastErrorClass === "transport_error"
+        ? getConnectionMock().autoResume[(thread as { id?: string }).id ?? ""]
+          ? "auto-resume"
+          : "unreachable"
+        : "failed";
   }
   return "ready";
 }
@@ -902,7 +916,8 @@ export function resolveSidebarFolderDot(
     statuses.has("input") ||
     statuses.has("approval") ||
     statuses.has("request") ||
-    statuses.has("limited")
+    statuses.has("limited") ||
+    statuses.has("unreachable")
   ) {
     return "attention";
   }

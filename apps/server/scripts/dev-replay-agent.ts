@@ -320,6 +320,14 @@ function runAgent(): void {
         const sessionId = String(params.sessionId);
         const session = sessions.get(sessionId);
         if (session === undefined) throw new Error(`Unknown session ${sessionId}`);
+        // While .t3/mock-fail-prompts exists, prompts fail like a dropped connection.
+        if (NodeFS.existsSync(new URL("../../../.t3/mock-fail-prompts", import.meta.url))) {
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          throw Object.assign(
+            new Error("API Error: Connection error (getaddrinfo ENOTFOUND api.anthropic.com)"),
+            { code: -32603 },
+          );
+        }
         const turns = loadTurns(session.model);
         const turn = turns[session.promptCount % Math.max(turns.length, 1)];
         session.promptCount += 1;
