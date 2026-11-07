@@ -230,6 +230,8 @@ export class ProjectMutationError extends Schema.TaggedError<ProjectMutationErro
   {
     commandId: CommandId,
     message: Schema.String,
+    /** Set when the project does not exist, which a removal can treat as already done. */
+    reason: Schema.optional(Schema.Literal("not-found")),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {}

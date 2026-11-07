@@ -1,15 +1,20 @@
 import { RegistryContext } from "@effect/atom-react";
+import { EnvironmentRpcUnavailableError } from "@t3tools/client-runtime/rpc";
 import type {
   DeleteProjectInput,
   UpdateProjectInput,
 } from "@t3tools/client-runtime/state/projects";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
   AuthOrchestrationOperateScope,
   AuthSettingsWriteScope,
+  CommandId,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   ProjectId,
+  ProjectMutationError,
   ProviderInstanceId,
+  ThreadId,
   type AuthEnvironmentScope,
   type AuthSessionState,
 } from "@t3tools/contracts";
@@ -33,7 +38,15 @@ import type { Project } from "../../types";
 type SessionResult = AsyncResult.AsyncResult<AuthSessionState, Error>;
 const state = vi.hoisted(() => ({
   sessions: new Map<EnvironmentId, Atom.Writable<SessionResult>>(),
+  // Machines whose connection dropped; their session grant outlives the connection.
+  offline: new Set<EnvironmentId>(),
+  // Machines not reached since the app started, so nothing about their server is known.
+  neverConnected: new Set<EnvironmentId>(),
+  // Machines whose threads are live; the shell mock below sets it.
+  liveShell: null as unknown as Atom.Writable<ReadonlySet<EnvironmentId>>,
   projects: [] as Project[],
+  // The mock's list is a plain array; bumping this re-renders its readers, as a live list change does.
+  projectsChanged: null as unknown as Atom.Writable<number>,
   update:
     vi.fn<
       (request: {
@@ -48,7 +61,9 @@ const state = vi.hoisted(() => ({
         input: DeleteProjectInput;
       }) => Promise<AsyncResult.Success<void>>
     >(),
-  confirm: vi.fn<() => Promise<boolean>>(),
+  confirm: vi.fn<(message: string) => Promise<boolean>>(),
+  // Thread shells as of the moment they are read.
+  threads: [] as EnvironmentThreadShell[],
   releaseUploads: vi.fn(),
   clearDraft: vi.fn(),
   toast: vi.fn(),
@@ -69,21 +84,46 @@ vi.mock(import("@t3tools/client-runtime/state/session"), async (original) => {
 });
 vi.mock(import("~/state/environments"), async (original) => ({
   ...(await original()),
-  useEnvironments: (() => ({ environments })) as never,
-  readEnvironment: ((id: EnvironmentId) =>
-    environments.find((environment) => environment.environmentId === id) ?? null) as never,
+  useEnvironments: (() => ({ environments: environments.map(withConnection) })) as never,
+  readEnvironment: ((id: EnvironmentId) => {
+    const environment = environments.find((entry) => entry.environmentId === id);
+    return environment ? withConnection(environment) : null;
+  }) as never,
   usePrimaryEnvironmentId: () => primaryId,
 }));
-vi.mock(import("~/state/entities"), async (original) => ({
-  ...(await original()),
-  useProjects: (() => state.projects) as never,
-  useThreadShells: () => [],
-  useServerConfigs: (() =>
-    new Map(
-      environments.map((environment) => [environment.environmentId, environment.serverConfig]),
-    )) as never,
-  waitForProjectRemoval: async () => true,
-}));
+// A machine's threads go live after its settings load; tests drive that through this atom.
+vi.mock(import("~/state/shell"), async (original) => {
+  const { Atom } = await import("effect/reactivity");
+  state.liveShell = Atom.make<ReadonlySet<EnvironmentId>>(new Set<EnvironmentId>()).pipe(
+    Atom.keepAlive,
+  );
+  return { ...(await original()), liveShellEnvironmentIdsAtom: state.liveShell };
+});
+vi.mock(import("~/state/entities"), async (original) => {
+  const { Atom } = await import("effect/reactivity");
+  const { useAtomValue } = await import("@effect/atom-react");
+  state.projectsChanged = Atom.make(0).pipe(Atom.keepAlive);
+  return {
+    ...(await original()),
+    useProjects: (() => {
+      useAtomValue(state.projectsChanged);
+      return state.projects;
+    }) as never,
+    readProject: ((ref: { environmentId: EnvironmentId; projectId: ProjectId }) =>
+      state.projects.find(
+        (project) => project.environmentId === ref.environmentId && project.id === ref.projectId,
+      ) ?? null) as never,
+    useThreadShells: () => [],
+    readThreadShells: (() => state.threads) as never,
+    useServerConfigs: (() =>
+      new Map(
+        environments
+          .filter((environment) => !state.neverConnected.has(environment.environmentId))
+          .map((environment) => [environment.environmentId, environment.serverConfig]),
+      )) as never,
+    waitForProjectRemoval: async () => true,
+  };
+});
 vi.mock(import("~/state/projects"), async (original) => {
   const actual = await original();
   return {
@@ -155,6 +195,14 @@ const environments = [primaryId, remoteId].map((environmentId) => ({
     environment: { platform: { machine: "server" }, capabilities: { projectOrganization: true } },
   },
 }));
+function withConnection<T extends { readonly environmentId: EnvironmentId }>(environment: T) {
+  if (state.neverConnected.has(environment.environmentId)) {
+    return { ...environment, connection: { phase: "disconnected" }, serverConfig: null };
+  }
+  return state.offline.has(environment.environmentId)
+    ? { ...environment, connection: { phase: "disconnected" } }
+    : environment;
+}
 const session = (scopes: ReadonlyArray<AuthEnvironmentScope>): AuthSessionState => ({
   authenticated: true,
   scopes,
@@ -179,6 +227,10 @@ function deferred<T>() {
 function setup() {
   vi.clearAllMocks();
   state.sessions.clear();
+  state.offline.clear();
+  state.neverConnected.clear();
+  state.threads = [];
+  appAtomRegistry.set(state.liveShell, new Set([primaryId, remoteId]));
   for (const id of [primaryId, remoteId])
     state.sessions.set(id, Atom.make<SessionResult>(writable()).pipe(Atom.keepAlive));
   state.projects = [primaryId, remoteId].map((environmentId) => ({
@@ -216,13 +268,20 @@ function setup() {
   useComposerDraftStore.setState({ clearProjectDraftThreadId: state.clearDraft });
 }
 
-function projectKey() {
-  return buildSidebarProjectSnapshots({
+function projectKey(workspaceRoot?: string) {
+  const groups = buildSidebarProjectSnapshots({
     projects: state.projects,
     settings: DEFAULT_CLIENT_SETTINGS,
     primaryEnvironmentId: primaryId,
     resolveEnvironmentLabel: (id) => id,
-  })[0]!.projectKey;
+  });
+  return (
+    workspaceRoot === undefined
+      ? groups[0]!
+      : groups.find((group) =>
+          group.memberProjects.some((member) => member.workspaceRoot === workspaceRoot),
+        )!
+  ).projectKey;
 }
 
 async function mountPanel(search: Omit<SettingsScopeSearch, "project"> = {}) {
@@ -269,6 +328,8 @@ async function mountPanel(search: Omit<SettingsScopeSearch, "project"> = {}) {
   return { ...screen, router };
 }
 
+type SettingsScreen = Awaited<ReturnType<typeof mountSettings>>;
+
 async function mountSettings(search: SettingsScopeSearch) {
   const searchParams = new URLSearchParams(
     Object.entries(search).flatMap(([key, value]) => (value === undefined ? [] : [[key, value]])),
@@ -307,8 +368,22 @@ const removeCheckout = (screen: Screen, root: string) =>
   screen.container.querySelector<HTMLButtonElement>(`[aria-label="Remove checkout ${root}"]`)!;
 const removeAll = (screen: Screen) =>
   [...screen.container.querySelectorAll("button")].find((button) =>
-    button.textContent?.includes("Remove all entries"),
+    button.textContent?.includes("Remove both checkouts"),
   )!;
+
+// The live list re-renders its readers as projects come, go, or change.
+async function setProjects(projects: Project[]) {
+  state.projects = projects;
+  await act(async () =>
+    appAtomRegistry.set(state.projectsChanged, appAtomRegistry.get(state.projectsChanged) + 1),
+  );
+}
+
+// A removal commits, then the live list drops that checkout.
+const dropCheckout = (workspaceRoot: string) =>
+  setProjects(state.projects.filter((project) => project.workspaceRoot !== workspaceRoot));
+
+const addCheckout = (project: Project) => setProjects([...state.projects, project]);
 
 async function grant(id: EnvironmentId, result: SessionResult) {
   await act(async () => appAtomRegistry.set(state.sessions.get(id)!, result));
@@ -317,20 +392,6 @@ async function grant(id: EnvironmentId, result: SessionResult) {
 async function rename(screen: Screen, title: string) {
   await userEvent.fill(nameInput(screen), title);
   await userEvent.keyboard("{Enter}");
-}
-
-// The recheck reports the denial by toast; seeing it proves the recheck ran.
-async function expectProjectAccessDeniedToast(title: string) {
-  await vi.waitFor(() =>
-    expect(state.toast).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "error",
-        title,
-        description: "This connection cannot change projects in remote.",
-      }),
-    ),
-  );
-  expect(state.toast).toHaveBeenCalledOnce();
 }
 
 describe("project organization", () => {
@@ -346,6 +407,42 @@ describe("project organization", () => {
       [remoteId, true],
     ]);
   });
+
+  it.each([
+    [
+      "remote refuses this connection",
+      () => grant(remoteId, AsyncResult.success(session([]))),
+      "This connection can't change projects on remote.",
+    ],
+    // The page's note covers the picked machine only, so it can't say this.
+    [
+      "remote is offline while primary loads",
+      () => {
+        state.offline.add(remoteId);
+        return grant(primaryId, AsyncResult.initial());
+      },
+      "Connect remote to change this project.",
+    ],
+    // Whether its server can pin is unknown, so the rows wait rather than hide.
+    [
+      "remote hasn't connected since the app started",
+      () => {
+        state.neverConnected.add(remoteId);
+        return grant(remoteId, AsyncResult.initial());
+      },
+      "Connect remote to change this project.",
+    ],
+  ])(
+    "says why Pin and Archive wait while one machine is picked: %s",
+    async (_case, wait, reason) => {
+      setup();
+      await wait();
+      await using _screen = await mountPanel({ machine: primaryId });
+      await expect.element(page.getByRole("button", { name: "Archive" })).toBeDisabled();
+      await expect.element(page.getByRole("switch", { name: "Pin project" })).toBeDisabled();
+      expect(page.getByText(reason, { exact: true }).elements()).toHaveLength(2);
+    },
+  );
 });
 
 describe("project settings permissions", () => {
@@ -357,7 +454,7 @@ describe("project settings permissions", () => {
     expect(nameInput(screen).disabled).toBe(true);
     expect(removeAll(screen).disabled).toBe(true);
     expect(screen.container.textContent).toContain(
-      "Shared settings require permission to change every checkout in this group.",
+      "This connection can't change projects on remote.",
     );
     expect(state.update).not.toHaveBeenCalled();
   });
@@ -373,23 +470,60 @@ describe("project settings permissions", () => {
     expect(nameInput(screen).value).toBe("Renamed");
   });
 
-  it("stops before the next member if its grant is revoked during an earlier update", async () => {
-    setup();
-    const firstUpdate = deferred<AsyncResult.Success<void>>();
-    state.update.mockReturnValueOnce(firstUpdate.promise);
-    await using screen = await mountPanel();
-    await rename(screen, "Renamed");
-    expect(state.update).toHaveBeenCalledOnce();
+  it.each([
+    [
+      "its grant is revoked",
+      () => grant(remoteId, AsyncResult.success(session([]))),
+      "This connection can't change projects on remote.",
+    ],
+    // regression: a session check that failed and was being retried read as a refusal
+    [
+      "its session check fails",
+      () =>
+        grant(
+          remoteId,
+          AsyncResult.failure(Cause.fail(new Error("Session check failed"))) as SessionResult,
+        ),
+      "remote is still loading. Try again in a moment.",
+    ],
+    // regression: only the grant was checked between writes, so the next one went to a dropped machine
+    [
+      "its machine drops",
+      () => {
+        state.offline.add(remoteId);
+        return grant(remoteId, writable());
+      },
+      "Connect remote and try again.",
+    ],
+  ])(
+    "stops before the next member if %s during an earlier update",
+    async (_case, change, description) => {
+      setup();
+      const firstUpdate = deferred<AsyncResult.Success<void>>();
+      state.update.mockReturnValueOnce(firstUpdate.promise);
+      await using screen = await mountPanel();
+      await rename(screen, "Renamed");
+      expect(state.update).toHaveBeenCalledOnce();
 
-    await grant(remoteId, AsyncResult.success(session([])));
-    await act(async () => {
-      firstUpdate.resolve(AsyncResult.success(undefined));
-      await firstUpdate.promise;
-    });
-    await expectProjectAccessDeniedToast("Failed to rename project");
-    expect(state.update).toHaveBeenCalledOnce();
-    expect(state.update.mock.calls[0]![0].environmentId).toBe(primaryId);
-  });
+      await change();
+      await act(async () => {
+        firstUpdate.resolve(AsyncResult.success(undefined));
+        await firstUpdate.promise;
+      });
+      await vi.waitFor(() =>
+        expect(state.toast).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "error",
+            title: "Failed to rename project",
+            description,
+          }),
+        ),
+      );
+      expect(state.toast).toHaveBeenCalledOnce();
+      expect(state.update).toHaveBeenCalledOnce();
+      expect(state.update.mock.calls[0]![0].environmentId).toBe(primaryId);
+    },
+  );
 
   it("disables removal for a checkout whose project grant is missing", async () => {
     setup();
@@ -397,6 +531,10 @@ describe("project settings permissions", () => {
     await using screen = await mountPanel();
     expect(removeCheckout(screen, "/work/remote").disabled).toBe(true);
     expect(removeCheckout(screen, "/work/primary").disabled).toBe(false);
+    // Its row says why, and so do the Danger row and the page's note, which cover it too.
+    const reason = page.getByText("This connection can't change projects on remote.");
+    await expect.element(reason.first()).toBeVisible();
+    expect(reason.elements()).toHaveLength(3);
   });
 
   it("removes a writable checkout while removal of the mixed group stays denied", async () => {
@@ -417,7 +555,260 @@ describe("project settings permissions", () => {
     expect(screen.router.state.location.href).toBe(initialHref);
   });
 
-  it("rechecks every removal target after confirmation before deleting or clearing drafts", async () => {
+  it("reports a removal the connection interrupted instead of failing silently", async () => {
+    setup();
+    state.delete.mockResolvedValueOnce(AsyncResult.failure(Cause.interrupt()) as never);
+    await using screen = await mountPanel();
+
+    await userEvent.click(removeCheckout(screen, "/work/primary"));
+    await vi.waitFor(() =>
+      expect(state.toast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "error",
+          title: 'Couldn\'t confirm "Shared repo" was removed',
+        }),
+      ),
+    );
+    expect(state.releaseUploads).not.toHaveBeenCalled();
+    expect(state.clearDraft).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "its grant is revoked",
+      () => grant(remoteId, AsyncResult.success(session([]))),
+      "This connection can't change projects on remote. 1 other checkout was already removed.",
+    ],
+    // regression: a session check that failed and was being retried read as a refusal
+    [
+      "its session check fails",
+      () =>
+        grant(
+          remoteId,
+          AsyncResult.failure(Cause.fail(new Error("Session check failed"))) as SessionResult,
+        ),
+      "remote is still loading. 1 other checkout was already removed. Try again in a moment.",
+    ],
+    [
+      "its machine drops",
+      () => {
+        state.offline.add(remoteId);
+      },
+      "remote isn't connected. 1 other checkout was already removed. Connect remote and try again.",
+    ],
+  ])(
+    "says what was already removed when a later checkout's machine changes mid-removal: %s",
+    async (_case, change, description) => {
+      setup();
+      const firstDelete = deferred<AsyncResult.Success<void>>();
+      state.delete.mockReturnValueOnce(firstDelete.promise);
+      await using screen = await mountPanel();
+      await userEvent.click(removeAll(screen));
+      await vi.waitFor(() => expect(state.delete).toHaveBeenCalledOnce());
+      // While it runs, it's announced, and no other removal can start.
+      expect(page.getByRole("status").element()).toHaveTextContent("Removing…");
+      expect(removeCheckout(screen, "/work/primary")).toHaveAttribute("aria-disabled", "true");
+
+      await change();
+      await act(async () => {
+        firstDelete.resolve(AsyncResult.success(undefined));
+        await firstDelete.promise;
+      });
+      await vi.waitFor(() =>
+        expect(state.toast).toHaveBeenCalledWith(
+          expect.objectContaining({ type: "error", description }),
+        ),
+      );
+      expect(state.delete).toHaveBeenCalledOnce();
+      expect(removeCheckout(screen, "/work/primary")).not.toHaveAttribute("aria-disabled");
+    },
+  );
+
+  it.each([
+    ["this client's list has dropped it", true, new Error("invalid_command")],
+    [
+      "the server says so while this client's list still shows it",
+      false,
+      new ProjectMutationError({
+        commandId: CommandId.make("command:already-removed"),
+        message: "Failed to mutate project.",
+        reason: "not-found",
+      }),
+    ],
+  ] as const)(
+    "treats a checkout already removed elsewhere as removed when %s",
+    async (_case, listCaughtUp, error) => {
+      setup();
+      state.delete.mockImplementationOnce(async ({ environmentId, input }) => {
+        if (listCaughtUp) {
+          state.projects = state.projects.filter(
+            (project) =>
+              !(project.environmentId === environmentId && project.id === input.projectId),
+          );
+        }
+        return AsyncResult.failure(Cause.fail(error)) as never;
+      });
+      await using screen = await mountPanel();
+
+      await userEvent.click(removeCheckout(screen, "/work/primary"));
+      await vi.waitFor(() => expect(state.releaseUploads).toHaveBeenCalledOnce());
+      expect(state.toast).not.toHaveBeenCalled();
+    },
+  );
+
+  it("says what was already removed when a later checkout fails", async () => {
+    setup();
+    state.delete
+      .mockResolvedValueOnce(AsyncResult.success(undefined))
+      .mockResolvedValueOnce(
+        AsyncResult.failure(Cause.fail(new Error("Server unavailable"))) as never,
+      );
+    await using screen = await mountPanel();
+
+    await userEvent.click(removeAll(screen));
+    await vi.waitFor(() =>
+      expect(state.toast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "error",
+          title: expect.stringMatching(/^Failed to remove "Shared repo" on /),
+          description:
+            "Server unavailable. 1 other checkout was already removed, and some of this one's threads may be deleted. Try again to finish.",
+        }),
+      ),
+    );
+  });
+
+  // regression: a checkout whose machine dropped partway was said to have lost threads it never sent
+  it("says nothing was sent for a checkout whose machine dropped partway", async () => {
+    setup();
+    state.delete.mockResolvedValueOnce(AsyncResult.success(undefined)).mockResolvedValueOnce(
+      AsyncResult.failure(
+        Cause.fail(
+          new EnvironmentRpcUnavailableError({
+            environmentId: remoteId,
+            message: "remote is not connected.",
+          }),
+        ),
+      ) as never,
+    );
+    await using screen = await mountPanel();
+
+    await userEvent.click(removeAll(screen));
+    await vi.waitFor(() =>
+      expect(state.toast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "error",
+          title: expect.stringMatching(/^Failed to remove "Shared repo" on /),
+          description:
+            "remote isn't connected. 1 other checkout was already removed. Connect remote and try again.",
+        }),
+      ),
+    );
+  });
+
+  // regression: the system confirm asked first, then the removal failed on the offline machine
+  it("disables an offline machine's removals, and refuses one whose machine drops first", async () => {
+    setup();
+    // Dropped after its session loaded, so its grant is still known.
+    state.offline.add(remoteId);
+    await using screen = await mountPanel();
+    expect(removeCheckout(screen, "/work/remote").disabled).toBe(true);
+    expect(removeAll(screen).disabled).toBe(true);
+    await expect.element(page.getByText("Connect remote to remove it.")).toBeVisible();
+    await expect.element(page.getByText("Connect remote to remove them.")).toBeVisible();
+    // Shared edits write to every checkout, so they wait too.
+    expect(nameInput(screen).disabled).toBe(true);
+    expect(screen.container.textContent).toContain("Connect remote to change this project.");
+
+    // Offline since the app started, its session never loaded: a reason to connect, not a refusal.
+    await grant(remoteId, AsyncResult.initial());
+    await expect.element(page.getByText("Connect remote to remove it.")).toBeVisible();
+    expect(screen.container.textContent).not.toContain("can't change projects");
+
+    // Back with its settings, its threads can still be stale, and the confirmation counts them.
+    state.offline.delete(remoteId);
+    await act(() => appAtomRegistry.set(state.liveShell, new Set([primaryId])));
+    const loading = page.getByText("remote is still loading…");
+    await expect.element(loading.first()).toBeVisible();
+    // Its row, the Danger row, and the page's note for shared edits.
+    expect(loading.elements()).toHaveLength(3);
+    expect(removeCheckout(screen, "/work/remote").disabled).toBe(true);
+    expect(removeAll(screen).disabled).toBe(true);
+
+    // This mock doesn't re-render, as a click can land before the panel sees the drop.
+    state.offline.add(primaryId);
+    await userEvent.click(removeCheckout(screen, "/work/primary"));
+    await vi.waitFor(() =>
+      expect(state.toast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "error",
+          title: "Failed to remove project",
+          description: "Connect primary and try again.",
+        }),
+      ),
+    );
+    // So is one whose threads go stale as the click lands, before the panel updates.
+    state.offline.delete(primaryId);
+    await act(() => {
+      appAtomRegistry.set(state.liveShell, new Set());
+      removeCheckout(screen, "/work/primary").click();
+    });
+    await vi.waitFor(() =>
+      expect(state.toast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          description: "primary is still loading. Try again in a moment.",
+        }),
+      ),
+    );
+    expect(state.confirm).not.toHaveBeenCalled();
+    expect(state.delete).not.toHaveBeenCalled();
+  });
+
+  // A confirmation can wait a while, so what it was asked about can change before it returns.
+  it.each([
+    [
+      "its grant is revoked",
+      () => grant(remoteId, AsyncResult.success(session([]))),
+      "This connection can't change projects on remote.",
+    ],
+    [
+      "its threads start reloading",
+      () => act(() => appAtomRegistry.set(state.liveShell, new Set([primaryId]))),
+      "remote is still loading. Try again in a moment.",
+    ],
+  ])(
+    "rechecks every removal target after confirmation, here when %s, before deleting or clearing drafts",
+    async (_case, change, description) => {
+      setup();
+      const confirmed = deferred<boolean>();
+      state.confirm.mockReturnValueOnce(confirmed.promise);
+      await using screen = await mountPanel();
+      await userEvent.click(removeAll(screen));
+      expect(state.confirm).toHaveBeenCalledOnce();
+
+      await change();
+      await act(async () => {
+        confirmed.resolve(true);
+        await confirmed.promise;
+      });
+      await vi.waitFor(() =>
+        expect(state.toast).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "error",
+            title: "Failed to remove project",
+            description,
+          }),
+        ),
+      );
+      expect(state.toast).toHaveBeenCalledOnce();
+      expect(state.delete).not.toHaveBeenCalled();
+      expect(state.releaseUploads).not.toHaveBeenCalled();
+      expect(state.clearDraft).not.toHaveBeenCalled();
+    },
+  );
+
+  // regression: a thread that started while the system confirm waited was stopped unasked
+  it("asks again when a thread starts running while the confirmation waits", async () => {
     setup();
     const confirmed = deferred<boolean>();
     state.confirm.mockReturnValueOnce(confirmed.promise);
@@ -425,37 +816,86 @@ describe("project settings permissions", () => {
     await userEvent.click(removeAll(screen));
     expect(state.confirm).toHaveBeenCalledOnce();
 
-    await grant(remoteId, AsyncResult.success(session([])));
+    const threadId = ThreadId.make("new-work");
+    state.threads = [
+      {
+        id: threadId,
+        environmentId: remoteId,
+        projectId: ProjectId.make(`project-${remoteId}`),
+        title: "New work",
+        lineage: { rootThreadId: threadId, parentThreadId: null, relationshipToParent: null },
+        runtime: {
+          status: "running",
+          activeRunId: null,
+          providerInstanceId: instanceId,
+          providerName: null,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      } as unknown as EnvironmentThreadShell,
+    ];
     await act(async () => {
       confirmed.resolve(true);
       await confirmed.promise;
     });
-    await expectProjectAccessDeniedToast("Failed to remove project");
-    expect(state.delete).not.toHaveBeenCalled();
-    expect(state.releaseUploads).not.toHaveBeenCalled();
-    expect(state.clearDraft).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(state.confirm).toHaveBeenCalledTimes(2));
+    // What changed opens the question, which the app's confirm dialog uses as its title.
+    expect(state.confirm.mock.calls[1]![0].split("\n")[0]).toBe(
+      'Now stops "New work". Remove project "Shared repo" and delete its 1 thread?',
+    );
+    // Confirming what changed goes ahead.
+    await vi.waitFor(() => expect(state.delete).toHaveBeenCalledTimes(2));
   });
 
-  it("does not save an edit whose grant was revoked mid-edit, and recovers when restored", async () => {
-    setup();
-    await using screen = await mountPanel();
-    await userEvent.fill(nameInput(screen), "Renamed");
-    await grant(remoteId, AsyncResult.success(session([])));
-    // Chromium takes focus off a newly disabled input without firing blur. Send the
-    // focusout so the save attempt runs and hits the same recheck as a real blur.
-    await act(async () => {
-      nameInput(screen).dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
-    });
-    await expectProjectAccessDeniedToast("Failed to rename project");
-    expect(state.update).not.toHaveBeenCalled();
-    expect(nameInput(screen).disabled).toBe(true);
+  // regression: Chromium takes focus off a newly disabled input without a blur, so an edit
+  // stayed in the dimmed field, unsaved and unexplained
+  it.each([
+    [
+      "its grant is revoked",
+      () => grant(remoteId, AsyncResult.success(session([]))),
+      () => grant(remoteId, writable()),
+    ],
+    [
+      "its machine drops",
+      // The connection mock doesn't re-render, so a fresh grant result does.
+      () => {
+        state.offline.add(remoteId);
+        return grant(remoteId, writable());
+      },
+      () => {
+        state.offline.delete(remoteId);
+        return grant(remoteId, writable());
+      },
+    ],
+  ])(
+    "brings back the saved name when a wait starts mid-edit, here when %s, and recovers",
+    async (_case, wait, restore) => {
+      setup();
+      // Titles that differ from the label, so a blur counted as an edit would retitle both.
+      state.projects = state.projects.map((project, index) =>
+        index === 1 ? { ...project, title: "Shared repo fork" } : project,
+      );
+      await using screen = await mountPanel();
+      const saved = nameInput(screen).value;
+      await userEvent.fill(nameInput(screen), "Renamed");
+      await wait();
+      expect(nameInput(screen).disabled).toBe(true);
+      expect(nameInput(screen).value).toBe(saved);
+      // No blur reaches the field as it goes, so nothing was tried or refused.
+      expect(state.update).not.toHaveBeenCalled();
+      expect(state.toast).not.toHaveBeenCalled();
 
-    await grant(remoteId, writable());
-    expect(nameInput(screen).disabled).toBe(false);
-    await rename(screen, "Recovered");
-    await vi.waitFor(() => expect(state.update).toHaveBeenCalledTimes(2));
-    expect(nameInput(screen).value).toBe("Recovered");
-  });
+      await restore();
+      expect(nameInput(screen).disabled).toBe(false);
+      // Visiting the field again without typing isn't the abandoned edit coming back.
+      await userEvent.click(nameInput(screen));
+      await userEvent.tab();
+      expect(state.update).not.toHaveBeenCalled();
+      await rename(screen, "Recovered");
+      await vi.waitFor(() => expect(state.update).toHaveBeenCalledTimes(2));
+      expect(nameInput(screen).value).toBe("Recovered");
+    },
+  );
 
   it.each([
     ["loading", () => AsyncResult.initial<AuthSessionState, Error>(), false],
@@ -619,6 +1059,122 @@ describe("project settings scope", () => {
     );
   });
 
+  // regression: the scope pickers remount the page, which dropped the removal underway, and a key
+  // read from the scope on screen stopped matching it after a switch
+  it.each([
+    {
+      change: "from one machine to all",
+      from: { machine: primaryId },
+      to: {},
+      press: "Remove checkout",
+      // Only primary goes: its row says so, and remote's own Remove doesn't wait.
+      expectUnderway: async (screen: Screen) => {
+        await expect
+          .element(page.getByRole("button", { name: "Remove both checkouts" }))
+          .toHaveAttribute("aria-disabled", "true");
+        expect(removeCheckout(screen, "/work/primary")).toHaveAttribute("aria-disabled", "true");
+        expect(removeCheckout(screen, "/work/remote")).not.toHaveAttribute("aria-disabled");
+      },
+      // The rest of the project stays, so the page does too.
+      expectEnd: async () => {
+        await dropCheckout("/work/primary");
+        await vi.waitFor(() => expect(page.getByRole("status").element().textContent).toBe(""));
+      },
+    },
+    {
+      change: "from all machines to one",
+      from: {},
+      to: { machine: primaryId },
+      press: "Remove both checkouts",
+      expectUnderway: async () => {
+        await expect
+          .element(page.getByRole("button", { name: "Removing…" }))
+          .toHaveAttribute("aria-disabled", "true");
+      },
+      // The project is gone from every scope, so the narrower one has nothing left to show.
+      expectEnd: async (screen: SettingsScreen) => {
+        await dropCheckout("/work/primary");
+        await dropCheckout("/work/remote");
+        await vi.waitFor(() =>
+          expect(screen.router.state.location.search).toEqual({ machine: primaryId }),
+        );
+      },
+    },
+  ])(
+    "keeps a removal underway when the scope changes $change",
+    async ({ from, to, press, expectUnderway, expectEnd }) => {
+      setup();
+      const deletion = deferred<AsyncResult.Success<void>>();
+      state.delete.mockReturnValueOnce(deletion.promise);
+      const key = projectKey();
+      await using screen = await mountSettings({ project: key, ...from });
+      await userEvent.click(page.getByRole("button", { name: press, exact: true }));
+      await vi.waitFor(() => expect(state.delete).toHaveBeenCalledOnce());
+
+      await act(() =>
+        screen.router.navigate({ to: "/settings/projects", search: { project: key, ...to } }),
+      );
+      await expectUnderway(screen);
+      expect(page.getByRole("status").element()).toHaveTextContent("Removing…");
+
+      await act(async () => {
+        deletion.resolve(AsyncResult.success(undefined));
+        await deletion.promise;
+      });
+      await vi.waitFor(() =>
+        expect(state.clearDraft).toHaveBeenCalledTimes(press === "Remove checkout" ? 1 : 2),
+      );
+      await expectEnd(screen);
+    },
+  );
+
+  // regression: the removal underway made every Remove wait, another project's too, and finishing
+  // it took the user from that project's page to the list
+  it("leaves another project alone while a removal runs", async () => {
+    setup();
+    state.projects = [
+      ...state.projects,
+      {
+        ...state.projects[0]!,
+        id: ProjectId.make("project-docs"),
+        title: "Docs",
+        workspaceRoot: "/work/docs",
+        repositoryIdentity: {
+          canonicalKey: "github.com/example/docs",
+          locator: {
+            source: "git-remote",
+            remoteName: "origin",
+            remoteUrl: "https://github.com/example/docs.git",
+          },
+        },
+      },
+    ];
+    const deletion = deferred<AsyncResult.Success<void>>();
+    state.delete.mockReturnValueOnce(deletion.promise);
+    await using screen = await mountSettings({ project: projectKey("/work/primary") });
+    await userEvent.click(page.getByRole("button", { name: "Remove both checkouts" }));
+    await vi.waitFor(() => expect(state.delete).toHaveBeenCalledOnce());
+
+    const docs = projectKey("/work/docs");
+    await act(() =>
+      screen.router.navigate({ to: "/settings/projects", search: { project: docs } }),
+    );
+    await expect
+      .element(page.getByRole("button", { name: "Remove project", exact: true }))
+      .not.toHaveAttribute("aria-disabled");
+    expect(page.getByRole("status").element().textContent).toBe("");
+
+    await act(async () => {
+      deletion.resolve(AsyncResult.success(undefined));
+      await deletion.promise;
+    });
+    await vi.waitFor(() => expect(state.clearDraft).toHaveBeenCalledTimes(2));
+    await dropCheckout("/work/primary");
+    await dropCheckout("/work/remote");
+    expect(screen.router.state.location.search).toEqual({ project: docs });
+    await expect.element(page.getByRole("textbox", { name: "Project name" })).toHaveValue("Docs");
+  });
+
   it.each([
     [undefined, "This project has no checkout on this environment."],
     [
@@ -660,16 +1216,125 @@ it("returns to the project overview after removal, clearing the selection but ke
   setup();
   state.projects = [state.projects[1]!];
   await using screen = await mountPanel({ machine: remoteId, checkout: "remote:/work/remote" });
-  const removeProject = [...screen.container.querySelectorAll("button")].find(
-    (button) => button.textContent === "Remove project",
-  )!;
 
-  await userEvent.click(removeProject);
+  await userEvent.click(page.getByRole("button", { name: "Remove project", exact: true }));
+  await vi.waitFor(() => expect(state.clearDraft).toHaveBeenCalledOnce());
+  await dropCheckout("/work/remote");
 
   await vi.waitFor(() => {
     expect(screen.router.state.location.pathname).toBe("/settings/projects");
     expect(screen.router.state.location.search).toEqual({ machine: remoteId });
   });
+});
+
+// regression: the label followed the live list, which drops each checkout once its removal
+// commits, so "Removing…" turned back into "Remove project" partway through
+it("says Removing… until the last checkout goes, then returns to the project overview", async () => {
+  setup();
+  const firstDelete = deferred<AsyncResult.Success<void>>();
+  const secondDelete = deferred<AsyncResult.Success<void>>();
+  state.delete.mockReturnValueOnce(firstDelete.promise).mockReturnValueOnce(secondDelete.promise);
+  await using screen = await mountPanel();
+  await userEvent.click(removeAll(screen));
+  await vi.waitFor(() => expect(state.delete).toHaveBeenCalledOnce());
+
+  await act(async () => {
+    firstDelete.resolve(AsyncResult.success(undefined));
+    await firstDelete.promise;
+  });
+  await dropCheckout("/work/primary");
+  await vi.waitFor(() => expect(state.delete).toHaveBeenCalledTimes(2));
+  await expect
+    .element(page.getByRole("button", { name: "Removing…" }))
+    .toHaveAttribute("aria-disabled", "true");
+  expect(page.getByRole("status").element()).toHaveTextContent("Removing…");
+
+  await act(async () => {
+    secondDelete.resolve(AsyncResult.success(undefined));
+    await secondDelete.promise;
+  });
+  await vi.waitFor(() => expect(state.clearDraft).toHaveBeenCalledTimes(2));
+  // The server is done, but a list that lags still shows remote, so it still says it's going.
+  await expect
+    .element(page.getByRole("button", { name: "Removing…" }))
+    .toHaveAttribute("aria-disabled", "true");
+  await dropCheckout("/work/remote");
+  await vi.waitFor(() => expect(screen.router.state.location.search).toEqual({}));
+});
+
+// regression: checkouts removed one at a time, at the same time, each left the rest of the project,
+// so neither took the page back once both were gone
+it("returns to the project overview when removals of single checkouts take the whole project", async () => {
+  setup();
+  const first = deferred<AsyncResult.Success<void>>();
+  const second = deferred<AsyncResult.Success<void>>();
+  state.delete.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+  await using screen = await mountPanel();
+  await userEvent.click(removeCheckout(screen, "/work/primary"));
+  await vi.waitFor(() => expect(state.delete).toHaveBeenCalledOnce());
+  await userEvent.click(removeCheckout(screen, "/work/remote"));
+  await vi.waitFor(() => expect(state.delete).toHaveBeenCalledTimes(2));
+
+  await act(async () => {
+    first.resolve(AsyncResult.success(undefined));
+    second.resolve(AsyncResult.success(undefined));
+    await Promise.all([first.promise, second.promise]);
+  });
+  await dropCheckout("/work/primary");
+  await dropCheckout("/work/remote");
+  await vi.waitFor(() => expect(screen.router.state.location.search).toEqual({}));
+});
+
+// regression: "Remove this project everywhere" left the page even when a checkout joined while
+// its confirmation waited, as if the project were gone
+it("stays on a project that a checkout joined while its removal was being confirmed", async () => {
+  setup();
+  const [primary, remote] = state.projects;
+  state.projects = [primary!];
+  const answer = deferred<boolean>();
+  state.confirm.mockReturnValueOnce(answer.promise);
+  const key = projectKey();
+  await using screen = await mountSettings({ project: key });
+
+  await userEvent.click(page.getByRole("button", { name: "Remove project", exact: true }));
+  await vi.waitFor(() => expect(state.confirm).toHaveBeenCalledOnce());
+  await addCheckout(remote!);
+  await act(async () => {
+    answer.resolve(true);
+    await answer.promise;
+  });
+  await vi.waitFor(() => expect(state.clearDraft).toHaveBeenCalledOnce());
+  await dropCheckout("/work/primary");
+
+  expect(state.delete).toHaveBeenCalledOnce();
+  expect(screen.router.state.location.search).toEqual({ project: key });
+  await expect
+    .element(page.getByRole("button", { name: "Remove project", exact: true }))
+    .toBeVisible();
+  expect(screen.container.textContent).toContain("/work/remote");
+
+  // regression: the page then left for the list once the project's key went, even when its last
+  // checkout had only moved to another project
+  await setProjects(
+    state.projects.map((project) =>
+      project.workspaceRoot === "/work/remote"
+        ? {
+            ...project,
+            repositoryIdentity: {
+              canonicalKey: "github.com/example/fork",
+              locator: {
+                source: "git-remote",
+                remoteName: "origin",
+                remoteUrl: "https://github.com/example/fork.git",
+              },
+            },
+          }
+        : project,
+    ),
+  );
+  const fork = projectKey("/work/remote");
+  expect(fork).not.toBe(key);
+  await vi.waitFor(() => expect(screen.router.state.location.search).toEqual({ project: fork }));
 });
 
 describe("project name composition", () => {

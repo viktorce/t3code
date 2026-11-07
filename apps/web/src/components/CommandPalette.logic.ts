@@ -207,15 +207,25 @@ export interface CommandPaletteItem {
 export interface CommandPaletteActionItem extends CommandPaletteItem {
   readonly kind: "action";
   readonly keepOpen?: boolean;
+  /** Opens a list in the palette, so the row shows a submenu's chevron. */
+  readonly opensView?: boolean;
   readonly run: () => Promise<void>;
   /** A pin toggle on the row, also reached with the pin shortcut while the row is highlighted. */
   readonly pin?: CommandPaletteItemPin;
+  /** Asks to remove the row's project, also reached with the remove shortcut while highlighted. */
+  readonly remove?: CommandPaletteItemRemove;
 }
 
 export interface CommandPaletteItemPin {
   readonly name: string;
   readonly pinned: boolean;
   readonly toggle: () => void;
+}
+
+export interface CommandPaletteItemRemove {
+  readonly name: string;
+  readonly checkoutCount: number;
+  readonly request: () => void;
 }
 
 export interface CommandPaletteSubmenuItem extends CommandPaletteItem {
@@ -373,9 +383,12 @@ export function buildProjectActionItems(input: {
   renderDescription?: (project: CommandPaletteProject) => ReactNode;
   shortcutCommand?: KeybindingCommand;
   pin?: (project: CommandPaletteProject) => CommandPaletteItemPin | null;
+  remove?: (project: CommandPaletteProject) => CommandPaletteItemRemove | null;
+  keepOpen?: boolean;
 }): CommandPaletteActionItem[] {
   return input.projects.map((project) => {
     const pin = input.pin?.(project) ?? null;
+    const remove = input.remove?.(project) ?? null;
     return {
       kind: "action",
       value: `${input.valuePrefix}:${project.environmentId}:${project.id}`,
@@ -390,6 +403,8 @@ export function buildProjectActionItems(input: {
       icon: input.icon(project),
       ...(input.shortcutCommand !== undefined ? { shortcutCommand: input.shortcutCommand } : {}),
       ...(pin ? { pin } : {}),
+      ...(remove ? { remove } : {}),
+      ...(input.keepOpen ? { keepOpen: true } : {}),
       run: async () => {
         await input.runProject(project);
       },

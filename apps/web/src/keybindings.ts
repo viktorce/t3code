@@ -228,8 +228,10 @@ export function formatShortcutLabel(
   shortcut: KeybindingShortcut,
   platform = navigator.platform,
 ): string {
-  const keyLabel = formatShortcutKeyLabel(shortcut.key);
   const useMetaForMod = isMacPlatform(platform);
+  // Mac keyboards print "delete" on this key; the glyph matches the modifier glyphs around it.
+  const keyLabel =
+    useMetaForMod && shortcut.key === "backspace" ? "⌫" : formatShortcutKeyLabel(shortcut.key);
   const showMeta = shortcut.metaKey || (shortcut.modKey && useMetaForMod);
   const showCtrl = shortcut.ctrlKey || (shortcut.modKey && !useMetaForMod);
   const showAlt = shortcut.altKey;
@@ -261,6 +263,42 @@ export function shortcutLabelForCommand(
   const platform = resolvePlatform(resolvedOptions);
   const shortcut = findEffectiveShortcutForCommand(keybindings, command, resolvedOptions);
   return shortcut ? formatShortcutLabel(shortcut, platform) : null;
+}
+
+/** The command's shortcut in `aria-keyshortcuts` syntax, such as "Shift+Meta+Backspace". */
+export function ariaKeyShortcutsForCommand(
+  keybindings: ResolvedKeybindingsConfig,
+  command: KeybindingCommand,
+  platform = navigator.platform,
+): string | null {
+  const shortcut = findEffectiveShortcutForCommand(keybindings, command, { platform });
+  if (!shortcut) return null;
+  const useMetaForMod = isMacPlatform(platform);
+  return [
+    ...(shortcut.ctrlKey || (shortcut.modKey && !useMetaForMod) ? ["Control"] : []),
+    ...(shortcut.altKey ? ["Alt"] : []),
+    ...(shortcut.shiftKey ? ["Shift"] : []),
+    ...(shortcut.metaKey || (shortcut.modKey && useMetaForMod) ? ["Meta"] : []),
+    ariaKeyName(shortcut.key),
+  ].join("+");
+}
+
+// aria-keyshortcuts names keys as KeyboardEvent.key does, such as "ArrowUp" and "Escape".
+const ARIA_KEY_NAMES: Readonly<Record<string, string>> = {
+  " ": "Space",
+  arrowup: "ArrowUp",
+  arrowdown: "ArrowDown",
+  arrowleft: "ArrowLeft",
+  arrowright: "ArrowRight",
+  pageup: "PageUp",
+  pagedown: "PageDown",
+};
+
+function ariaKeyName(key: string): string {
+  return (
+    ARIA_KEY_NAMES[key] ??
+    (key.length === 1 ? key.toUpperCase() : key.slice(0, 1).toUpperCase() + key.slice(1))
+  );
 }
 
 export function threadJumpCommandForIndex(index: number): ThreadJumpKeybindingCommand | null {

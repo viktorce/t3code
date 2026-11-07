@@ -4,7 +4,20 @@ import { Button } from "../../components/ui/Button";
 import { ProjectFavicon } from "../../components/ProjectFavicon";
 import * as Dialog from "../../components/ui/Dialog";
 import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
-import { planProjectRemoval } from "@t3tools/client-runtime/state/projects";
+import {
+  describeProjectRemovalFailure,
+  isProjectNotFoundError,
+  isProjectRemovalUnsent,
+  planProjectRemoval,
+  projectChangeWait,
+  projectRemovalFailureText,
+  projectRemovalGrowth,
+  projectRemovalReadiness,
+  projectRemovalReconfirmation,
+  projectRemovalRefusal,
+  projectRemovalTarget,
+  projectRemovalWait,
+} from "@t3tools/client-runtime/state/projects";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -14,13 +27,16 @@ import {
   type ProjectGroup,
 } from "@t3tools/client-runtime/state/project-grouping";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
+import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import { useRef, useState } from "react";
 import { Platform, Pressable, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { readEnvironment, useEnvironments } from "../../state/environments";
 import { projectEnvironment } from "../../state/projects";
-import { useThreadShells } from "../../state/entities";
+import { liveShellEnvironmentIdsAtom } from "../../state/shell";
+import { readThreadShells } from "../../state/entities";
 import { appAtomRegistry } from "../../state/atom-registry";
 import {
   clearComposerDraft,
@@ -29,9 +45,9 @@ import {
   waitForComposerDraftsLoaded,
 } from "../../state/use-composer-drafts";
 import {
-  readEnvironmentScope,
+  readEnvironmentScopeState,
   useEnvironmentScope,
-  useEnvironmentsWithScope,
+  useEnvironmentScopeStates,
 } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsScreen } from "./components/SettingsScreen";
@@ -62,7 +78,7 @@ export function SettingsProjectOverviewRouteScreen() {
   const navigation = useNavigation();
   const {
     availableTargets,
-    selectedTargets,
+    projectMembersOf,
     projectGroups,
     selectedProjectKey,
     selectProject,
@@ -77,11 +93,9 @@ export function SettingsProjectOverviewRouteScreen() {
     selectProject(null);
   };
   const group = projectGroups.find((entry) => entry.key === selectedProjectKey);
-  const selectedEnvironmentIds = new Set(selectedTargets.map((entry) => entry.environmentId));
-  const members =
-    group?.members
-      .map((entry) => entry.project)
-      .filter((project) => selectedEnvironmentIds.has(project.environmentId)) ?? [];
+  // Checkouts on machines that aren't connected stay, so the page says why they can't change, and
+  // removing the project everywhere never quietly skips them.
+  const members = group ? projectMembersOf(group) : [];
 
   return (
     <SettingsScreen title="Projects" menus={[environmentMenu]}>
@@ -98,8 +112,7 @@ export function SettingsProjectOverviewRouteScreen() {
           </Text>
         ) : !group || members.length === 0 ? (
           <Text className="px-2 text-base text-foreground-muted">
-            This project has no checkout on the selected connected environments. Change the filter
-            above.
+            This project has no checkout on the selected environments. Change the filter above.
           </Text>
         ) : (
           <ProjectOverviewContent
@@ -107,7 +120,6 @@ export function SettingsProjectOverviewRouteScreen() {
             members={members}
             group={group}
             connectedTargets={availableTargets}
-            environments={selectedTargets}
             hasOtherMembers={members.length < (group?.members.length ?? 0)}
             isRemoving={isRemoving}
             setIsRemoving={setIsRemoving}
@@ -127,7 +139,6 @@ function ProjectOverviewContent(props: {
   /** Pin and archive belong to the whole project, even when the filter picks one machine. */
   readonly group: ProjectGroup;
   readonly connectedTargets: readonly SettingsTarget[];
-  readonly environments: readonly SettingsTarget[];
   readonly hasOtherMembers: boolean;
   readonly isRemoving: boolean;
   readonly setIsRemoving: (isRemoving: boolean) => void;
@@ -137,16 +148,17 @@ function ProjectOverviewContent(props: {
   readonly onProjectRemoved: (projectKey: string | null) => void;
 }) {
   const { isRemoving, setIsRemoving, startRemoval, finishRemoval } = props;
-  const representative = props.members[0]!;
+  const { environments } = useEnvironments();
+  // A grant outlives its connection, so an offline machine's checkouts still look removable.
+  const isOffline = (member: EnvironmentProject) =>
+    !props.connectedTargets.some((target) => target.environmentId === member.environmentId);
+  const connectedMembers = props.members.filter((member) => !isOffline(member));
+  // An offline machine can't show its project's icon.
+  const representative = connectedMembers[0] ?? props.members[0]!;
   const displayName = deriveProjectGroupLabel({ representative, members: props.members });
   const [draftName, setDraftName] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-  const threads = useThreadShells();
   const allMembers = props.group.members.map((member) => member.project);
-  const removableEnvironments = useEnvironmentsWithScope(allMembers, AuthOrchestrationOperateScope);
-  const canRemoveGroup = props.members.every((member) =>
-    removableEnvironments.has(member.environmentId),
-  );
   const deleteProject = useAtomCommand(projectEnvironment.delete, { reportFailure: false });
   const updateProject = useAtomCommand(projectEnvironment.update, {
     label: "project name update",
@@ -160,25 +172,33 @@ function ProjectOverviewContent(props: {
   const memberTargets = allMembers.map((member) =>
     props.connectedTargets.find((entry) => entry.environmentId === member.environmentId),
   );
-  const offline = memberTargets.some((target) => target === undefined);
-  // Older servers drop pin and archive, so their projects do not offer them.
-  // Offline members are checked when the write runs, so their reason can show.
-  const canOrganize =
-    allMembers.every(
-      (member, index) =>
-        memberTargets[index] === undefined || removableEnvironments.has(member.environmentId),
-    ) &&
-    memberTargets.every(
-      (target) =>
-        target === undefined ||
-        target.serverConfig.environment.capabilities.projectOrganization === true,
-    );
+  // Older servers drop pin and archive, so their projects do not offer them. Otherwise the rows
+  // wait while a machine refuses, is offline, or is loading, and say why.
+  const canOrganize = memberTargets.every(
+    (target) =>
+      target === undefined ||
+      target.serverConfig.environment.capabilities.projectOrganization === true,
+  );
   // One machine at a time, stopping at the first failure, as web does.
+  const labelOfEnvironment = (environmentId: EnvironmentProject["environmentId"]) =>
+    environments.find((entry) => entry.environmentId === environmentId)?.label ??
+    "this environment";
   const organize = async (input: { readonly pinned?: boolean; readonly archived?: boolean }) => {
     setIsOrganizing(true);
     for (const member of allMembers) {
-      if (!readEnvironmentScope(member.environmentId, AuthOrchestrationOperateScope)) {
-        Dialog.alert("Failed to update project", "This connection can no longer change it.");
+      // A machine can drop, lose its grant, or fail a session check between writes, as on web.
+      const readiness = projectRemovalReadiness(
+        readEnvironment(member.environmentId),
+        readEnvironmentScopeState(member.environmentId, AuthOrchestrationOperateScope),
+        true,
+      );
+      if (readiness !== "ready") {
+        const refusal = projectRemovalRefusal(
+          "Failed to update project",
+          readiness,
+          labelOfEnvironment(member.environmentId),
+        );
+        Dialog.alert(refusal.title, projectRemovalFailureText(refusal));
         break;
       }
       const result = await organizeProject({
@@ -198,33 +218,69 @@ function ProjectOverviewContent(props: {
     }
     setIsOrganizing(false);
   };
-  const nextName = (draftName ?? displayName).trim();
-  const canSave = !isSaving && nextName.length > 0 && nextName !== displayName;
+  // The confirmation counts a machine's threads, so removal waits for them as well as its settings.
+  const liveEnvironmentIds = useAtomValue(liveShellEnvironmentIdsAtom);
+  // A machine that hasn't connected since the app started has no session to grant or refuse yet.
+  const scopeStates = useEnvironmentScopeStates(allMembers, AuthOrchestrationOperateScope);
 
+  const nextName = (draftName ?? displayName).trim();
+  // A shared edit writes to every checkout, so it waits for all of them, in the removal rows' order.
+  // It counts no threads, so it doesn't wait for them. Renaming only some would split the name.
+  const changeWait = (members: readonly EnvironmentProject[]) =>
+    projectChangeWait(
+      members,
+      (member) =>
+        projectRemovalReadiness(
+          environments.find((entry) => entry.environmentId === member.environmentId),
+          scopeStates.get(member.environmentId) ?? "unknown",
+          true,
+        ),
+      (member) => labelOfEnvironment(member.environmentId),
+    );
+  const renameWait = changeWait(props.members);
+  const organizeWait = changeWait(allMembers);
+  const canSave =
+    !isSaving && renameWait === null && nextName.length > 0 && nextName !== displayName;
+  const readinessOf = (member: EnvironmentProject) =>
+    projectRemovalReadiness(
+      environments.find((entry) => entry.environmentId === member.environmentId),
+      scopeStates.get(member.environmentId) ?? "unknown",
+      liveEnvironmentIds.has(member.environmentId),
+    );
+  const removalWait = (members: readonly EnvironmentProject[]) =>
+    projectRemovalWait(members, readinessOf, (member) => labelOfEnvironment(member.environmentId));
+  const removeAllWait = removalWait(props.members);
+
+  // Refuses before the confirm, and again after it, reading the machines as of that moment: while
+  // the confirm waits, one can drop, lose its grant, or start reloading the threads it counted.
   const checkRemovalAccess = (members: readonly EnvironmentProject[]) => {
-    const denied = members.find(
-      (member) => !readEnvironmentScope(member.environmentId, AuthOrchestrationOperateScope),
-    );
-    if (!denied) return true;
-    const environment = props.environments.find(
-      (entry) => entry.environmentId === denied.environmentId,
-    );
-    Dialog.alert(
-      "Failed to remove project",
-      `This connection cannot change projects in ${environment?.label ?? "this environment"}.`,
-    );
-    return false;
+    const live = appAtomRegistry.get(liveShellEnvironmentIdsAtom);
+    for (const member of members) {
+      const readiness = projectRemovalReadiness(
+        readEnvironment(member.environmentId),
+        readEnvironmentScopeState(member.environmentId, AuthOrchestrationOperateScope),
+        live.has(member.environmentId),
+      );
+      if (readiness === "ready") continue;
+      const refusal = projectRemovalRefusal(
+        "Failed to remove project",
+        readiness,
+        labelOfEnvironment(member.environmentId),
+      );
+      Dialog.alert(refusal.title, projectRemovalFailureText(refusal));
+      return false;
+    }
+    return true;
   };
 
-  const removeMembers = (members: readonly EnvironmentProject[]) => {
-    if (!checkRemovalAccess(members) || !startRemoval()) return;
-    const projectKey = props.projectKey;
-    const plan = planProjectRemoval({
+  // Planned from the threads as they are now: a confirmation can wait while threads start or appear.
+  const planRemoval = (members: readonly EnvironmentProject[]) => {
+    const threads = readThreadShells();
+    return planProjectRemoval({
       members: members.map((member) => ({
         ...member,
-        environmentLabel: props.environments.find(
-          (entry) => entry.environmentId === member.environmentId,
-        )?.label,
+        environmentLabel: environments.find((entry) => entry.environmentId === member.environmentId)
+          ?.label,
       })),
       groupMemberCount: props.members.length,
       hasOtherMembers: props.hasOtherMembers,
@@ -232,32 +288,97 @@ function ProjectOverviewContent(props: {
       threads,
       unloadedThreadCount: readUnloadedThreadCount(members, threads),
     });
+  };
+
+  const removeMembers = (members: readonly EnvironmentProject[]) => {
+    if (!checkRemovalAccess(members) || !startRemoval()) return;
+    confirmRemoval(members, planRemoval(members), null);
+  };
+
+  const confirmRemoval = (
+    members: readonly EnvironmentProject[],
+    asked: ReturnType<typeof planRemoval>,
+    growth: string | null,
+  ) => {
+    const projectKey = props.projectKey;
+    const confirmLabel =
+      asked.targetKind === "project"
+        ? "Remove project"
+        : members.length === 1
+          ? "Remove checkout"
+          : `Remove ${members.length} checkouts`;
     Dialog.confirm({
-      title: plan.targetKind === "checkout" ? "Remove checkout" : "Remove project",
-      message: plan.confirmationMessage,
-      confirmText: plan.targetKind === "checkout" ? "Remove checkout" : "Remove project",
+      title: confirmLabel,
+      message:
+        growth === null ? asked.confirmationMessage : projectRemovalReconfirmation(asked, growth),
+      confirmText: confirmLabel,
       destructive: true,
       onCancel: finishRemoval,
       onConfirm: () => {
+        // A machine that dropped or started reloading meanwhile refuses before any second question.
+        if (!checkRemovalAccess(members)) {
+          finishRemoval();
+          return;
+        }
+        const plan = planRemoval(members);
+        // A thread to delete or stop that the answer didn't cover needs its own answer.
+        const grown = projectRemovalGrowth(asked, plan);
+        if (grown !== null) {
+          confirmRemoval(members, plan, grown);
+          return;
+        }
         void (async () => {
           setIsRemoving(true);
-          if (!checkRemovalAccess(members)) return;
+          let removedCount = 0;
+          const labelOf = (member: EnvironmentProject) => labelOfEnvironment(member.environmentId);
+          // Every failure after the first removal says what is already gone, before what to do.
+          const fail = (
+            member: EnvironmentProject,
+            kind: "denied" | "loading" | "unsent" | "interrupted" | "rejected",
+            error?: unknown,
+          ) => {
+            const failure = describeProjectRemovalFailure({
+              kind,
+              target: projectRemovalTarget(member, members, labelOf),
+              machine: labelOf(member),
+              removedCount,
+              error,
+              listInView: true,
+            });
+            Dialog.alert(failure.title, projectRemovalFailureText(failure));
+          };
           for (const member of members) {
-            if (!checkRemovalAccess([member])) return;
+            // Read again for each checkout: while earlier ones go, a machine can drop, lose its
+            // grant, or fail a session check. The confirmation already counted the threads.
+            const readiness = projectRemovalReadiness(
+              readEnvironment(member.environmentId),
+              readEnvironmentScopeState(member.environmentId, AuthOrchestrationOperateScope),
+              true,
+            );
+            if (readiness !== "ready") {
+              fail(member, readiness === "offline" ? "unsent" : readiness);
+              return;
+            }
             const result = await deleteProject({
               environmentId: member.environmentId,
               input: { projectId: member.id, force: true },
             });
             if (result._tag === "Failure") {
-              if (!isAtomCommandInterrupted(result)) {
-                const error = squashAtomCommandFailure(result);
-                Dialog.alert(
-                  `Failed to remove "${member.title}"`,
-                  error instanceof Error ? error.message : "An error occurred.",
-                );
+              // A dropped connection interrupts the command, and the server may or may not have applied it.
+              if (isAtomCommandInterrupted(result)) {
+                fail(member, "interrupted");
+                return;
               }
-              return;
+              const error = squashAtomCommandFailure(result);
+              // Another client, or an earlier attempt, may have removed it already; that is the goal.
+              if (!isProjectNotFoundError(error)) {
+                // A machine that dropped after an earlier checkout went never received this one.
+                if (isProjectRemovalUnsent(error)) fail(member, "unsent");
+                else fail(member, "rejected", error);
+                return;
+              }
             }
+            removedCount += 1;
             await waitForComposerDraftsLoaded()
               .then(() => {
                 for (const draftKey of findNewTaskDraftKeys(
@@ -330,17 +451,22 @@ function ProjectOverviewContent(props: {
               onChangeText={setDraftName}
               onSubmitEditing={saveName}
               returnKeyType="done"
-              editable={!isSaving}
+              editable={!isSaving && renameWait === null}
             />
-            {canSave ? (
+            {/* A draft the wait interrupted stays, with Save shown waiting, so it doesn't read as saved. */}
+            {nextName.length > 0 && nextName !== displayName ? (
               <Button
                 label="Save"
                 accessibilityHint="Save project name"
                 tone="secondary"
+                disabled={!canSave}
                 onPress={saveName}
               />
             ) : null}
           </View>
+          {renameWait ? (
+            <Text className="text-sm leading-normal text-foreground-muted">{renameWait}</Text>
+          ) : null}
         </View>
       </SettingsSection>
 
@@ -349,24 +475,27 @@ function ProjectOverviewContent(props: {
           <SettingsSwitchRow
             icon="pin"
             label="Pin"
-            subtitle={
-              offline
-                ? "Connect every machine with this project to change this."
-                : "Pinned projects come first in project pickers."
-            }
+            subtitle={[
+              "Pinned projects come first in project pickers.",
+              // With some machines filtered out, a reason can name one of them.
+              ...(props.hasOtherMembers ? ["This applies to every checkout."] : []),
+              ...(organizeWait ? [organizeWait] : []),
+            ].join(" ")}
             value={props.group.pinned}
-            disabled={isOrganizing || offline}
+            disabled={isOrganizing || organizeWait !== null}
             onValueChange={(pinned) => void organize({ pinned })}
           />
           <SettingsActionRow
             icon="archivebox"
             label={props.group.archived ? "Unarchive project" : "Archive project"}
-            description={
+            description={[
               props.group.archived
                 ? "Hidden from project pickers. Threads and files are kept."
-                : "Hides the project from project pickers. Threads and files are kept."
-            }
-            disabled={isOrganizing || offline}
+                : "Hides the project from project pickers. Threads and files are kept.",
+              ...(props.hasOtherMembers ? ["This applies to every checkout."] : []),
+              ...(organizeWait ? [organizeWait] : []),
+            ].join(" ")}
+            disabled={isOrganizing || organizeWait !== null}
             onPress={() => void organize({ archived: !props.group.archived })}
           />
         </SettingsSection>
@@ -374,9 +503,10 @@ function ProjectOverviewContent(props: {
 
       <SettingsSection title="Checkouts">
         {props.members.map((member, index) => {
-          const environment = props.environments.find(
+          const environment = environments.find(
             (entry) => entry.environmentId === member.environmentId,
           );
+          const wait = removalWait([member]);
           return (
             <View
               key={`${member.environmentId}:${member.id}`}
@@ -400,11 +530,16 @@ function ProjectOverviewContent(props: {
                 {member.workspaceRoot}
               </Text>
               {props.members.length > 1 || props.hasOtherMembers ? (
-                <RemoveCheckoutAction
-                  member={member}
-                  disabled={isRemoving}
-                  onPress={() => removeMembers([member])}
-                />
+                <>
+                  {wait ? (
+                    <Text className="text-sm leading-normal text-foreground-muted">{wait}</Text>
+                  ) : null}
+                  <RemoveCheckoutAction
+                    member={member}
+                    disabled={isRemoving || wait !== null}
+                    onPress={() => removeMembers([member])}
+                  />
+                </>
               ) : null}
             </View>
           );
@@ -415,20 +550,24 @@ function ProjectOverviewContent(props: {
           icon="trash"
           label={
             props.hasOtherMembers
-              ? "Remove checkout"
+              ? props.members.length === 1
+                ? "Remove checkout"
+                : `Remove ${props.members.length} checkouts`
               : props.members.length > 1
                 ? "Remove this project everywhere"
                 : "Remove project"
           }
-          description={
+          description={[
             props.hasOtherMembers
-              ? "Deletes the selected machine's checkout entries and their threads. Other machines and files on disk are not touched."
+              ? `Deletes the selected checkout ${props.members.length === 1 ? "entry and its threads. Its folder stays" : "entries and their threads. Their folders stay"} on disk, and the project keeps its other checkouts.`
               : props.members.length > 1
-                ? `Deletes all ${props.members.length} checkout entries and their threads on every machine. Files on disk are not touched.`
-                : "Deletes the project entry and its threads. Files on disk are not touched."
-          }
+                ? `Deletes ${props.members.length === 2 ? "both" : `all ${props.members.length}`} checkout entries and their threads on every machine. Their folders stay on disk.`
+                : "Deletes the project entry and its threads. The project folder stays on disk.",
+            // Why it waits follows what it does, as on web.
+            ...(removeAllWait ? [removeAllWait] : []),
+          ].join(" ")}
           tone="danger"
-          disabled={!canRemoveGroup || isRemoving}
+          disabled={isRemoving || removeAllWait !== null}
           loading={isRemoving}
           onPress={() => removeMembers(props.members)}
         />

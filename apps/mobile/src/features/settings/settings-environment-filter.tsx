@@ -124,14 +124,18 @@ export function useSettingsEnvironmentFilter() {
       ),
     [availableTargets, selectedIds],
   );
+  // A project's checkouts on the selected machines, connected or not: a project whose machines are
+  // offline can still be picked, and its page says why it can't change. Writes use selectedTargets.
+  const projectMembersOf = useMemo(
+    () => (group: (typeof projectGroups)[number]) =>
+      group.members
+        .map((member) => member.project)
+        .filter((project) => selectedIds === null || selectedIds.has(project.environmentId)),
+    [selectedIds],
+  );
   const selectableProjectGroups = useMemo(
-    () =>
-      projectGroups.filter((group) =>
-        group.members.some((member) =>
-          selectedTargets.some((target) => target.environmentId === member.project.environmentId),
-        ),
-      ),
-    [projectGroups, selectedTargets],
+    () => projectGroups.filter((group) => projectMembersOf(group).length > 0),
+    [projectGroups, projectMembersOf],
   );
   return useMemo(
     () => ({
@@ -140,6 +144,7 @@ export function useSettingsEnvironmentFilter() {
       selectedIds,
       projectGroups,
       selectableProjectGroups,
+      projectMembersOf,
       selectedProjectKey,
       selectProject,
       getSelectedProjectKey,
@@ -155,6 +160,7 @@ export function useSettingsEnvironmentFilter() {
       selectedIds,
       projectGroups,
       selectableProjectGroups,
+      projectMembersOf,
       selectedProjectKey,
       setSelectedIds,
       selectProject,

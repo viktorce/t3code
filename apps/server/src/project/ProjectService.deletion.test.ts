@@ -502,29 +502,43 @@ it.effect("deletes a project without force once its imported threads were delete
 );
 
 it.effect(
-  "clears a deleted project's settings overrides so a machine-disabled instance cannot stay alive",
+  "clears a deleted project's settings overrides so a machine-disabled instance cannot stay alive, but keeps its worktree cleanup rule for the worktrees its threads leave",
   () =>
     Effect.gen(function* () {
-      const projectId = ProjectId.make("project:overrides-cleanup");
       const instanceId = ProviderInstanceId.make("codex_work");
-      yield* seedProject(projectId);
+      const cases = [
+        { projectId: ProjectId.make("project:overrides-cleanup"), worktreeCleanup: undefined },
+        {
+          projectId: ProjectId.make("project:worktree-rule"),
+          worktreeCleanup: { mode: "off" } as const,
+        },
+      ];
+      for (const { projectId } of cases) yield* seedProject(projectId);
 
       yield* Effect.gen(function* () {
         const service = yield* ProjectService.make;
         const serverSettings = yield* ServerSettings.ServerSettingsService;
-        yield* serverSettings.updateSettings({
-          projectSettingsOverrides: {
-            [projectId]: { providerInstances: { [instanceId]: { enabled: true } } },
-          },
-        });
+        for (const { projectId, worktreeCleanup } of cases) {
+          yield* serverSettings.updateSettings({
+            projectSettingsOverrides: {
+              [projectId]: {
+                providerInstances: { [instanceId]: { enabled: true } },
+                ...(worktreeCleanup ? { worktreeCleanup } : {}),
+              },
+            },
+          });
 
-        yield* service.delete({
-          commandId: CommandId.make("command:overrides-cleanup:project-delete"),
-          projectId,
-        });
+          yield* service.delete({
+            commandId: CommandId.make(`command:${projectId}:project-delete`),
+            projectId,
+          });
 
-        const settingsAfterDelete = yield* serverSettings.getSettings;
-        assert.isUndefined(settingsAfterDelete.projectSettingsOverrides[projectId]);
+          const settingsAfterDelete = yield* serverSettings.getSettings;
+          assert.deepStrictEqual(
+            settingsAfterDelete.projectSettingsOverrides[projectId],
+            worktreeCleanup ? { worktreeCleanup, providerInstances: {} } : undefined,
+          );
+        }
       }).pipe(Effect.provide(layerServices));
     }).pipe(Effect.provide(layerDatabase)),
 );

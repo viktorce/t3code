@@ -74,6 +74,7 @@ import {
   PinIcon,
   PinOffIcon,
   SquarePenIcon,
+  Trash2Icon,
   TextSearchIcon,
   UserPlusIcon,
 } from "lucide-react";
@@ -124,7 +125,11 @@ import { useStartTriage } from "../hooks/useStartTriage";
 import { pickTriageEnvironment } from "../lib/triageTarget";
 import { useNewProject } from "../hooks/useNewProject";
 import { useOrderWhileOpen } from "../hooks/useOrderWhileOpen";
-import { reportProjectFailure, useProjectPin } from "../hooks/useProjectGroupUpdate";
+import {
+  reportProjectFailure,
+  useProjectGroupRemoval,
+  useProjectPin,
+} from "../hooks/useProjectGroupUpdate";
 import {
   useEnvironmentProviders,
   useEnvironments,
@@ -217,6 +222,7 @@ import {
 import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { isSidebarHiddenThread } from "./Sidebar.logic";
 import { CommandPaletteContent, type PendingInputSelection } from "./CommandPaletteContent";
+import { CommandPaletteProjectRemoval } from "./CommandPaletteProjectRemoval";
 import {
   selectCommandPaletteClientSettings,
   useEnvironmentLookups,
@@ -226,6 +232,7 @@ import {
 import {
   buildNewThreadInProjectItems,
   buildProjectSearchItems,
+  buildRemoveProjectItems,
 } from "./CommandPaletteProjectItems";
 import {
   CommandPaletteSubmitButton,
@@ -259,7 +266,10 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { ComposerHandleContext, useComposerHandleContext } from "../composerHandleContext";
 import type { ChatComposerHandle } from "./chat/ChatComposer";
 import { pickableProjectGroups } from "@t3tools/client-runtime/state/project-grouping";
-import { buildSidebarProjectPickerEntries } from "../sidebarProjectGrouping";
+import {
+  buildSidebarProjectPickerEntries,
+  type SidebarProjectSnapshot,
+} from "../sidebarProjectGrouping";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { readPullRequestListPreferences } from "~/components/pullRequest/pullRequestListPreferences";
 import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
@@ -268,6 +278,12 @@ import { threadRecentUse } from "@t3tools/shared/paletteSearch";
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
 const ADD_PROJECT_ENTRY_GROUP = "add-project";
 const NEW_THREAD_IN_GROUP = "projects";
+const REMOVE_PROJECT_GROUP = "remove-project";
+// Its rows resolve while rendering, so removals show up while the view is open.
+const REMOVE_PROJECT_VIEW: CommandPaletteView = {
+  addonIcon: <Trash2Icon className={ADDON_ICON_CLASS} />,
+  groups: [{ value: REMOVE_PROJECT_GROUP, label: "Remove a project", items: [] }],
+};
 
 /** The submenu an open intent starts in; its groups resolve while rendering. */
 function openIntentView(intent: CommandPaletteOpenIntent | null): CommandPaletteView | null {
@@ -425,15 +441,21 @@ function OpenCommandPaletteDialog(props: {
   const { query, views: viewStack } = searchState;
   const setQuery = (query: string) => dispatchSearch({ type: "query", query });
   const deferredQuery = useDeferredValue(query);
+  // Rows show full paths and the client doesn't know each machine's home, so "~/x" finds "/x".
+  const removalQuery = deferredQuery.replace(/^~(?=[/\\])/, "");
   const isActionsOnly = deferredQuery.startsWith(">");
   const [highlightedItemValue, setHighlightedItemValue] = useState<string | null>(null);
   const resultListRef = useRef<LegendListRef | null>(null);
   // A pushed view drops the typed highlight until the user moves it again.
   const highlightClearedRef = useRef(viewStack.length > 0);
+  // Removing the last row would send Base UI back to the first row, which the user never chose,
+  // so nothing is highlighted until the user moves.
+  const [highlightWaitsForMove, setHighlightWaitsForMove] = useState(false);
   // Entering or leaving browse mode remounts the input; carry the caret across it.
   const remountSelectionRef = useRef<PendingInputSelection | null>(null);
   function clearTypedHighlight(): void {
     highlightClearedRef.current = true;
+    setHighlightWaitsForMove(false);
     setHighlightedItemValue(null);
   }
   const clientSettings = useClientSettings(selectCommandPaletteClientSettings);
@@ -506,6 +528,7 @@ function OpenCommandPaletteDialog(props: {
   const providersByEnvironment = useEnvironmentProviders();
   const { changeThemeItem, changeAppearanceItem, themeEditorItem } = useCommandPaletteThemeItems();
   const currentView = viewStack.at(-1)?.view ?? null;
+  const isRemoveProjectView = currentView?.groups[0]?.value === REMOVE_PROJECT_GROUP;
   const threadSearchQuery = currentView === null && !isActionsOnly ? deferredQuery : "";
   const [browseGeneration, setBrowseGeneration] = useState(0);
   const [browseNavigation] = useState(createBrowseNavigationCoordinator);
@@ -565,6 +588,50 @@ function OpenCommandPaletteDialog(props: {
         }
       : null;
   };
+  const { canRemoveProjectGroup } = useProjectGroupRemoval();
+  const [removalGroup, setRemovalGroup] = useState<SidebarProjectSnapshot | null>(null);
+  // The "No project" home is not a row here, and removing it would delete every scratch thread.
+  // An offline machine's home is still its home, so this uses the last root its server reported.
+  const isScratchGroup = (group: SidebarProjectSnapshot) =>
+    group.memberProjects.some((member) =>
+      isScratchProject(
+        member,
+        environments.find((environment) => environment.environmentId === member.environmentId)
+          ?.serverConfig?.scratchWorkspaceRoot ?? scratchWorkspaceRootFor(member.environmentId),
+      ),
+    );
+  const removalOf = (group: SidebarProjectSnapshot | undefined) =>
+    group && !isScratchGroup(group) && canRemoveProjectGroup(group.memberProjects)
+      ? {
+          name: group.displayName,
+          checkoutCount: group.memberProjects.length,
+          request: () => setRemovalGroup(group),
+        }
+      : null;
+  const projectRemove = (project: CommandPaletteProject) =>
+    removalOf(projectGroupByTargetKey.get(`${project.environmentId}:${project.id}`));
+  // Archived projects are the likeliest to be removed, so this list keeps them, last.
+  const removalEntries = buildSidebarProjectPickerEntries({
+    groups: [
+      ...pickableProjectGroups(projectGroups),
+      ...projectGroups.filter((group) => group.archived),
+    ],
+    preferredProjectRef: null,
+  }).filter(({ group }) => removalOf(group) !== null);
+  const removalGroupByTargetKey = new Map(
+    removalEntries.map(({ group, targetProject }) => [
+      `${targetProject.environmentId}:${targetProject.id}`,
+      group,
+    ]),
+  );
+  // The dialog follows the group as it is now, so a checkout that joins is removed too, and a
+  // "No project" home that a reconnecting machine turns out to own closes it.
+  const liveRemovalGroup =
+    removalGroup && projectGroups.find((group) => group.projectKey === removalGroup.projectKey);
+  const dialogGroup =
+    liveRemovalGroup && isScratchGroup(liveRemovalGroup)
+      ? null
+      : (liveRemovalGroup ?? removalGroup);
 
   const addProjectEnvironmentOptions = (() => {
     const options = environments
@@ -650,8 +717,12 @@ function OpenCommandPaletteDialog(props: {
           addProjectCloneFlow.repository?.nameWithOwner ?? addProjectCloneFlow.remoteUrl,
         )
       : "";
+  // A path typed while choosing a project to remove filters the rows by path instead.
   const canBrowsePaths =
-    browseEnvironmentId !== null && !isRemoteProjectRepositoryStep && newProjectFlow === null;
+    browseEnvironmentId !== null &&
+    !isRemoteProjectRepositoryStep &&
+    newProjectFlow === null &&
+    !isRemoveProjectView;
   const browsePath = getFilesystemBrowsePath(query, browseEnvironmentPlatform, canBrowsePaths);
   const isBrowsing = browsePath.isBrowsing;
   const browseDirectoryPath = browsePath.directoryPath;
@@ -817,8 +888,31 @@ function OpenCommandPaletteDialog(props: {
       locationByEnvironmentId: projectEnvironmentLocationById,
       runProject: openProjectFromSearch,
       pin: projectPin,
+      remove: projectRemove,
     }),
     rowOrderKey("project"),
+    true,
+  );
+
+  // Built only while its view is open; the root action just needs one removable project.
+  const removeProjectItems = useOrderWhileOpen(
+    isRemoveProjectView
+      ? buildRemoveProjectItems({
+          projects: removalEntries.map(({ group, targetProject }) => ({
+            ...targetProject,
+            displayName: group.displayName,
+          })),
+          projectGroupByTargetKey: removalGroupByTargetKey,
+          locationByEnvironmentId: projectEnvironmentLocationById,
+          query: removalQuery,
+          runProject: async (project) => {
+            removalOf(
+              removalGroupByTargetKey.get(`${project.environmentId}:${project.id}`),
+            )?.request();
+          },
+        })
+      : [],
+    rowOrderKey("remove-project"),
     true,
   );
 
@@ -831,6 +925,7 @@ function OpenCommandPaletteDialog(props: {
         projectGroupByTargetKey,
         locationByEnvironmentId: projectEnvironmentLocationById,
         pin: projectPin,
+        remove: projectRemove,
         runProject: async (project) => {
           const group = projectGroupByTargetKey.get(`${project.environmentId}:${project.id}`);
           const contextualRefBelongsToGroup =
@@ -910,6 +1005,7 @@ function OpenCommandPaletteDialog(props: {
     browseNavigation.invalidate();
     dispatchSearch({ type: "push", view });
     highlightClearedRef.current = true;
+    setHighlightWaitsForMove(false);
     setHighlightedItemValue(null);
   });
 
@@ -923,6 +1019,7 @@ function OpenCommandPaletteDialog(props: {
       setAddProjectEnvironmentId(newProjectFlow.sourcesEnvironmentId);
     }
     dispatchSearch({ type: "back" });
+    setHighlightWaitsForMove(false);
     setHighlightedItemValue(null);
   }
 
@@ -1688,6 +1785,21 @@ function OpenCommandPaletteDialog(props: {
       },
     });
   }
+  // An action, not a submenu, so searching a project name does not suggest removing it.
+  if (removalEntries.length > 0) {
+    actionItems.push({
+      kind: "action",
+      value: "action:remove-project",
+      searchTerms: ["remove project", "delete project", "remove", "delete", "trash"],
+      title: "Remove project...",
+      icon: <Trash2Icon className={ITEM_ICON_CLASS} />,
+      keepOpen: true,
+      opensView: true,
+      run: async () => {
+        pushPaletteView(REMOVE_PROJECT_VIEW);
+      },
+    });
+  }
 
   const rootGroups = buildRootGroups({ actionItems, recentThreadItems });
   // Every setting goes to the palette's own matcher, so settings get the same
@@ -1732,19 +1844,28 @@ function OpenCommandPaletteDialog(props: {
                 items: projectThreadItems.length > 0 ? projectThreadItems : [addProjectAction],
               },
             ]
-          : currentView?.groups[0]?.value === "themes"
-            ? changeThemeItem.groups
-            : currentView?.groups[0]?.value === "appearance"
-              ? changeAppearanceItem.groups
-              : (currentView?.groups ?? rootGroups);
+          : isRemoveProjectView
+            ? [
+                {
+                  value: REMOVE_PROJECT_GROUP,
+                  label: "Remove a project",
+                  items: removeProjectItems,
+                },
+              ]
+            : currentView?.groups[0]?.value === "themes"
+              ? changeThemeItem.groups
+              : currentView?.groups[0]?.value === "appearance"
+                ? changeAppearanceItem.groups
+                : (currentView?.groups ?? rootGroups);
 
   const isLinkedThreadSearch =
     linkedThreadSearch?.linkedThreads !== undefined && deferredQuery === linkedThreadSearch.query;
   const filteredGroups = filterCommandPaletteGroups({
     activeGroups,
-    query: deferredQuery,
+    query: isRemoveProjectView ? removalQuery : deferredQuery,
     isInSubmenu: currentView !== null,
-    ...(deferredQuery.trim().length > 0
+    // Choosing what to remove never falls back to other commands, which Enter would run instead.
+    ...(deferredQuery.trim().length > 0 && !isRemoveProjectView
       ? {
           allOptions: {
             rootGroups,
@@ -2372,14 +2493,22 @@ function OpenCommandPaletteDialog(props: {
   }
   const resultRows = buildCommandPaletteRows(displayedGroups);
   const autoHighlightsFirstRow =
-    !isBrowsing && !isRemoteProjectCloneFlow && newProjectFlow === null;
+    !isBrowsing && !isRemoteProjectCloneFlow && newProjectFlow === null && !highlightWaitsForMove;
 
   const inputPlaceholder =
     newProjectFlow !== null
       ? "Project name"
-      : (remoteProjectInputPlaceholder(addProjectCloneFlow) ??
-        getCommandPaletteInputPlaceholder(paletteMode));
+      : isRemoveProjectView
+        ? "Search by name or path..."
+        : (remoteProjectInputPlaceholder(addProjectCloneFlow) ??
+          getCommandPaletteInputPlaceholder(paletteMode));
   const isSubmenu = paletteMode === "submenu" || paletteMode === "submenu-browse";
+  // The same row Enter would run, which also shows the row's buttons.
+  const targetItem = findHighlightedCommandPaletteItem(
+    displayedGroups,
+    highlightedItemValue ?? (autoHighlightsFirstRow ? (resultRows.itemValues[0] ?? null) : null),
+  );
+  const highlightedRemove = targetItem?.kind === "action" ? (targetItem.remove ?? null) : null;
   const hasHighlightedBrowseItem = highlightedItemValue?.startsWith("browse:") ?? false;
   const canWriteSourceControl = useEnvironmentScope(
     addProjectCloneFlow?.environmentId ?? null,
@@ -2482,6 +2611,15 @@ function OpenCommandPaletteDialog(props: {
         highlightedItem.pin.toggle();
         return;
       }
+    }
+    if (command === "project.remove") {
+      // The default chord clears browsing data in browsers, so it never leaves the palette.
+      event.preventDefault();
+      event.stopPropagation();
+      if (highlightedRemove) highlightedRemove.request();
+      else if (isRemoveProjectView && targetItem?.value.startsWith("remove-project:"))
+        executeItem(targetItem);
+      return;
     }
     // Global new-thread handlers ignore shortcuts while the palette is open.
     const isJump = threadJumpIndexFromCommand(command ?? "") !== null;
@@ -2811,7 +2949,9 @@ function OpenCommandPaletteDialog(props: {
       : addProjectCloneFlow?.step === "repository"
         ? (remoteProjectButtonLabel ?? "Continue")
         : !canSubmitBrowsePath || hasHighlightedBrowseItem
-          ? "Select"
+          ? isRemoveProjectView
+            ? "Remove..."
+            : "Select"
           : undefined;
 
   const footerTrailing = canOpenProjectFromFileManager ? (
@@ -2828,13 +2968,17 @@ function OpenCommandPaletteDialog(props: {
     // still arrive below it.
     <span className="text-muted-foreground text-xs">Searching messages…</span>
   ) : null;
-
   return (
     <CommandPaletteContent
       key={`${viewStack.length}-${browseGeneration}-${isBrowsing}-${newProjectFlow ? "new-project" : (addProjectCloneFlow?.step ?? "none")}`}
       aria-label="Command palette"
       autoHighlight={autoHighlightsFirstRow ? "always" : false}
       footerActionLabel={footerActionLabel}
+      // Enter has no row to run when nothing matches, or after the bottom row goes until the user moves.
+      footerActionDisabled={
+        newProjectFlow === null && addProjectCloneFlow?.step !== "repository" && targetItem === null
+      }
+      footerNavigationDisabled={resultRows.itemValues.length === 0}
       footerTrailing={footerTrailing}
       inputAccessory={inputAccessory}
       inputProps={{
@@ -2872,10 +3016,20 @@ function OpenCommandPaletteDialog(props: {
       virtualized
       onItemHighlighted={(value, eventDetails) => {
         if (eventDetails.reason === "none" && highlightClearedRef.current) return;
+        const vanished =
+          highlightedItemValue !== null && !resultRows.itemValues.includes(highlightedItemValue);
+        // Turning off auto-highlight before Base UI falls back to the first row leaves none.
+        if (vanished && value === undefined) {
+          setHighlightWaitsForMove(true);
+          setHighlightedItemValue(null);
+          return;
+        }
         highlightClearedRef.current = false;
+        setHighlightWaitsForMove(false);
         setHighlightedItemValue(typeof value === "string" ? value : null);
         const rowIndex = resultRows.rowIndexByItemIndex[eventDetails.index];
-        if (eventDetails.reason === "keyboard" && rowIndex !== undefined) {
+        // A removed row hands the highlight to the row that takes its place.
+        if ((eventDetails.reason === "keyboard" || vanished) && rowIndex !== undefined) {
           scrollCommandPaletteRowIntoView(resultListRef.current, rowIndex);
         }
       }}
@@ -2917,6 +3071,12 @@ function OpenCommandPaletteDialog(props: {
         isActionsOnly={isActionsOnly}
         keybindings={keybindings}
         onExecuteItem={executeItem}
+        // Base UI reports nothing when the pointer lands on the row it already highlights.
+        onHoverItem={(value) => {
+          if (!highlightClearedRef.current) return;
+          highlightClearedRef.current = false;
+          setHighlightedItemValue(value);
+        }}
         {...(addProjectCloneFlow?.step === "repository"
           ? {
               emptyStateMessage:
@@ -2934,7 +3094,24 @@ function OpenCommandPaletteDialog(props: {
                   }
                 : isThreadSearchPending
                   ? { emptyStateMessage: "Searching thread messages…" }
-                  : {})}
+                  : isRemoveProjectView
+                    ? {
+                        emptyStateMessage:
+                          query.trim() === ""
+                            ? "No projects left to remove."
+                            : "No matching projects.",
+                      }
+                    : {})}
+      />
+      <CommandPaletteProjectRemoval
+        group={dialogGroup}
+        locations={projectEnvironmentLocationById}
+        keybindings={keybindings}
+        onClose={() => setRemovalGroup(null)}
+        onFollowSettingsLink={() => {
+          setRemovalGroup(null);
+          setOpen(false);
+        }}
       />
     </CommandPaletteContent>
   );

@@ -501,8 +501,19 @@ export const make = Effect.gen(function* () {
   });
 
   // Best-effort cleanup releases disabled instances kept alive by overrides; crashes have no replay to revisit deletion.
+  // The worktree cleanup rule stays, so the deleted threads' worktrees keep the rule the removal showed.
   const clearProjectSettingsOverrides = (projectId: ProjectId) =>
-    serverSettings.updateSettings({ projectSettingsOverrides: { [projectId]: null } }).pipe(
+    serverSettings.getSettings.pipe(
+      Effect.flatMap((settings) => {
+        const worktreeCleanup = settings.projectSettingsOverrides[projectId]?.worktreeCleanup;
+        return serverSettings.updateSettings({
+          // One write, so no sweep runs between dropping the entry and restoring the rule.
+          // An entry patch keeps stored instances unless it names them, hence the empty map.
+          projectSettingsOverrides: {
+            [projectId]: worktreeCleanup ? { worktreeCleanup, providerInstances: {} } : null,
+          },
+        });
+      }),
       Effect.asVoid,
       Effect.catchCause((cause) =>
         Effect.logWarning(

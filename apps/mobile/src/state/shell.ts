@@ -2,6 +2,7 @@ import {
   createEnvironmentShellAtoms,
   createEnvironmentShellSummaryAtom,
   createEnvironmentSnapshotAtom,
+  createLiveShellEnvironmentIdsAtom,
   EMPTY_SHELL_STATE,
   type EnvironmentShellState,
 } from "@t3tools/client-runtime/state/shell";
@@ -19,6 +20,12 @@ export const environmentShellSummaryAtom = createEnvironmentShellSummaryAtom({
   catalogValueAtom: environmentCatalog.catalogValueAtom,
   shellStateValueAtom: environmentShell.stateValueAtom,
 });
+
+/** Environments whose threads reflect the server now, not a cache or a resync in flight. */
+export const liveShellEnvironmentIdsAtom = createLiveShellEnvironmentIdsAtom({
+  catalogValueAtom: environmentCatalog.catalogValueAtom,
+  statusAtom: environmentShell.statusAtom,
+}).pipe(Atom.withLabel("mobile-live-shell-environment-ids"));
 
 const EMPTY_ENVIRONMENT_SHELL_STATE_ATOM = Atom.make<EnvironmentShellState>(EMPTY_SHELL_STATE);
 

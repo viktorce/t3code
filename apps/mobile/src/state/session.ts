@@ -1,10 +1,12 @@
 import { useAtomValue } from "@effect/atom-react";
-import { createEnvironmentSessionAtoms } from "@t3tools/client-runtime/state/session";
+import {
+  createEnvironmentSessionAtoms,
+  sessionScopeState,
+} from "@t3tools/client-runtime/state/session";
 import {
   type AuthEnvironmentScope,
   type AuthSessionState,
   type EnvironmentId,
-  sessionGrantsScope,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -21,8 +23,7 @@ export function sessionHasScope(
   result: AsyncResult.AsyncResult<AuthSessionState, unknown>,
   scope: AuthEnvironmentScope,
 ): boolean {
-  const session = AsyncResult.getOrElse(result, () => null);
-  return result._tag !== "Failure" && session !== null && sessionGrantsScope(session, scope);
+  return sessionScopeState(result, scope) === "granted";
 }
 
 export function useEnvironmentScope(
@@ -56,6 +57,37 @@ export function useEnvironmentsWithScope(
     [environments, scope],
   );
   return useAtomValue(permittedEnvironments);
+}
+
+/** Each environment's grant of a scope, telling a refusal apart from a session not loaded yet. */
+export function useEnvironmentScopeStates(
+  environments: ReadonlyArray<{ readonly environmentId: EnvironmentId }>,
+  scope: AuthEnvironmentScope,
+): ReadonlyMap<EnvironmentId, ReturnType<typeof sessionScopeState>> {
+  const scopeStates = useMemo(
+    () =>
+      Atom.make(
+        (get) =>
+          new Map(
+            environments.map(({ environmentId }) => [
+              environmentId,
+              sessionScopeState(get(environmentSession.sessionStateAtom(environmentId)), scope),
+            ]),
+          ),
+      ),
+    [environments, scope],
+  );
+  return useAtomValue(scopeStates);
+}
+
+export function readEnvironmentScopeState(
+  environmentId: EnvironmentId,
+  scope: AuthEnvironmentScope,
+) {
+  return sessionScopeState(
+    appAtomRegistry.get(environmentSession.sessionStateAtom(environmentId)),
+    scope,
+  );
 }
 
 export function readEnvironmentScope(

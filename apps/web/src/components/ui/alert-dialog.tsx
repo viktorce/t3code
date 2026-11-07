@@ -89,14 +89,22 @@ function AlertDialogHeader({ className, ...props }: React.ComponentProps<"div">)
 function AlertDialogFooter({
   className,
   variant = "default",
+  stacking = "narrow",
   ...props
 }: React.ComponentProps<"div"> & {
   variant?: "default" | "bare";
+  /**
+   * When the buttons stack below `sm`. "touch" keeps them in a row for a mouse or trackpad, where a
+   * short desktop window needs the height more than thumb-wide targets.
+   */
+  stacking?: "narrow" | "touch";
 }) {
   return (
     <div
       className={cn(
         "flex flex-col-reverse gap-2 px-6 sm:flex-row sm:justify-end sm:rounded-b-[calc(var(--radius-2xl)-1px)]",
+        stacking === "touch" &&
+          "pointer-fine:flex-row pointer-fine:flex-wrap pointer-fine:justify-end",
         variant === "default" && "border-t bg-muted/72 py-4",
         variant === "bare" && "pb-6",
         className,
