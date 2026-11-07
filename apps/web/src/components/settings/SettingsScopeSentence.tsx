@@ -3,7 +3,9 @@ import { useLocation } from "@tanstack/react-router";
 import { CheckIcon, ChevronDownIcon, LayersIcon } from "lucide-react";
 import { Fragment, useState, type ReactNode } from "react";
 
+import { requestWorkspaceFocus } from "../../lib/workspaceFocus";
 import type { SidebarProjectSnapshot } from "../../sidebarProjectGrouping";
+import { useAllEnvironmentShellsBootstrapped } from "../../state/entities";
 import { useEnvironments, type EnvironmentPresentation } from "../../state/environments";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { ProjectFavicon } from "../ProjectFavicon";
@@ -26,11 +28,14 @@ import {
   MenuSeparator,
   MenuTrigger,
 } from "../ui/menu";
+import { PathText } from "./PathText";
 import { useOptionalSettingsScope } from "./SettingsScopeContext";
 import { resolveSettingsScope, type SettingsScopeSearch } from "./settingsScope";
+import { getSettingsSearchTargetScope, SETTINGS_SECTION_LABELS } from "./settingsSearch";
 import {
   ALL_ENVIRONMENTS_VALUE,
   ALL_PROJECTS_VALUE,
+  SCRATCH_PROJECT_DESCRIPTION,
   environmentAxisValue,
   projectAxisValue,
   projectScopeMenuGroups,
@@ -39,7 +44,8 @@ import {
   settingsScopeEnvironmentAddress,
   settingsScopeEnvironmentLabel,
   settingsScopeEnvironmentLabels,
-  settingsScopeProjectMachines,
+  settingsScopeProjectDistinction,
+  settingsScopeProjectPath,
 } from "./settingsScopeAxis";
 
 export const SETTINGS_DEVICE_ONLY_PATHS: ReadonlySet<string> = new Set([
@@ -54,6 +60,8 @@ export const SETTINGS_DEVICE_ONLY_PATHS: ReadonlySet<string> = new Set([
   "/settings/about",
 ]);
 
+const SECTION_LABELS: Readonly<Record<string, string>> = SETTINGS_SECTION_LABELS;
+
 interface SettingsScopeMenuProps {
   readonly value: SettingsScopeSearch;
   readonly groups: readonly SidebarProjectSnapshot[];
@@ -67,6 +75,20 @@ export function SettingsScopeSentence() {
   const pathname = useLocation({ select: (location) => location.pathname });
   const { environments } = useEnvironments();
   if (scope === null || SETTINGS_DEVICE_ONLY_PATHS.has(pathname)) return null;
+  // One environment leaves nothing to choose, unless a filter on it needs a way to be cleared.
+  const onlyEnvironmentId = environments.length === 1 ? environments[0]!.environmentId : null;
+  const showEnvironment =
+    onlyEnvironmentId === null ||
+    scope.search.checkout !== undefined ||
+    (scope.search.machine !== undefined && scope.search.machine !== onlyEnvironmentId);
+  // Nor does a missing project's page, which offers its own way back to the list.
+  if (
+    !showEnvironment &&
+    pathname === "/settings/projects" &&
+    scope.scope.kind === "unavailable" &&
+    scope.scope.reason === "project-missing"
+  )
+    return null;
   const props: SettingsScopeMenuProps = {
     value: scope.search,
     singleEnvironment: scope.singleEnvironment,
@@ -77,15 +99,26 @@ export function SettingsScopeSentence() {
   return (
     <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 px-3 text-sm text-muted-foreground sm:px-4">
       <span className="flex min-w-0 items-center gap-1.5">
-        <span className="shrink-0">Applying settings for</span>
-        <ProjectScopeMenu {...props} />
-      </span>
-      <span className="flex min-w-0 items-center gap-1.5">
         <span className="shrink-0">
-          {scope.search.machine || scope.scope.kind === "checkout" ? "on" : "across"}
+          {/* The project list applies nothing; it only shows which projects it lists. */}
+          {pathname === "/settings/projects" && !scope.search.project ? "Showing" : "Settings for"}
         </span>
-        <EnvironmentScopeMenu {...props} />
+        {/* The Projects page has its own focus targets: the list row and the project's card. */}
+        <ProjectScopeMenu
+          {...props}
+          focusDefault={pathname !== "/settings/projects"}
+          listing={pathname === "/settings/projects" && !scope.search.project}
+          pageLabel={SECTION_LABELS[pathname]}
+        />
       </span>
+      {showEnvironment ? (
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span className="shrink-0">
+            {scope.search.machine || scope.scope.kind === "checkout" ? "on" : "across"}
+          </span>
+          <EnvironmentScopeMenu {...props} />
+        </span>
+      ) : null}
     </p>
   );
 }
@@ -101,11 +134,15 @@ interface ScopeOption {
 function ScopeOptionLabel({ option }: { option: ScopeOption }) {
   return (
     <>
-      {option.icon}
+      {/* Centers the icon on the label's line when the details below it wrap. */}
+      {option.icon ? <span className="mt-0.75 flex shrink-0 self-start">{option.icon}</span> : null}
       <span className="min-w-0 flex-1">
         <span className="block truncate">{option.label}</span>
+        {/* Wraps instead of truncating: the end of a path is what tells same-name projects apart. */}
         {option.secondary ? (
-          <span className="block truncate text-xs text-muted-foreground">{option.secondary}</span>
+          <span className="block text-xs wrap-anywhere text-muted-foreground">
+            <PathText text={option.secondary} />
+          </span>
         ) : null}
       </span>
       {option.offline ? (
@@ -116,6 +153,8 @@ function ScopeOptionLabel({ option }: { option: ScopeOption }) {
 }
 
 function ScopeMenu({
+  id,
+  focusDefault = false,
   ariaLabel,
   icon,
   label,
@@ -125,6 +164,9 @@ function ScopeMenu({
   searchLabel,
   onChange,
 }: {
+  /** Stable across scope changes, so focus can return to the remounted trigger. */
+  id: string;
+  focusDefault?: boolean;
   ariaLabel: string;
   icon: ReactNode;
   label: string;
@@ -135,12 +177,24 @@ function ScopeMenu({
   onChange: (next: string) => void;
 }) {
   const [query, setQuery] = useState("");
+  const searchPending = useLocation({
+    select: (location) => getSettingsSearchTargetScope(location.hash) !== null,
+  });
+  // A new scope remounts the page, trigger included, so focus waits for the new trigger.
+  // A pending search result keeps its hash and takes focus itself once the scope shows it.
+  const select = (next: string) => {
+    onChange(next);
+    if (!searchPending) requestWorkspaceFocus({ area: "settings", selector: `#${id}` });
+  };
   const Trigger = options.length > 6 ? ComboboxTrigger : MenuTrigger;
   const trigger = (
     <Trigger
-      aria-label={`${ariaLabel}: ${label}`}
+      id={id}
+      {...(focusDefault ? { "data-workspace-focus-default": "" } : {})}
+      // Voice control users say what they see, so the name starts with the visible label.
+      aria-label={`${label}, ${ariaLabel}`}
       render={<Button variant="outline" size="sm" />}
-      className="min-w-0 max-w-72"
+      className="min-w-0 max-w-72 shrink"
     >
       {icon}
       <span className="min-w-0 truncate">{label}</span>
@@ -154,8 +208,9 @@ function ScopeMenu({
   const choices = allOption ? [allOption, ...options] : options;
   if (options.length > 6) {
     const needle = query.trim().toLowerCase();
+    // Only text the rows show can match, so every result explains itself.
     const filteredItems = choices.filter((option) =>
-      `${option.label} ${option.secondary ?? ""} ${option.value}`.toLowerCase().includes(needle),
+      `${option.label} ${option.secondary ?? ""}`.toLowerCase().includes(needle),
     );
     return (
       <Combobox
@@ -170,7 +225,7 @@ function ScopeMenu({
           if (!open) setQuery("");
         }}
         onValueChange={(option) => {
-          if (option) onChange(option.value);
+          if (option) select(option.value);
         }}
       >
         {trigger}
@@ -204,7 +259,7 @@ function ScopeMenu({
           <MenuRadioGroup
             value={value}
             onValueChange={(next) => {
-              if (typeof next === "string") onChange(next);
+              if (typeof next === "string") select(next);
             }}
           >
             {choices.map((option, index) => (
@@ -249,7 +304,8 @@ function EnvironmentScopeMenu({
     : environments;
   return (
     <ScopeMenu
-      ariaLabel="Environment scope"
+      id="settings-scope-environment"
+      ariaLabel="environment"
       icon={
         selected ? (
           <EnvironmentMachineIcon
@@ -303,39 +359,60 @@ function EnvironmentScopeMenu({
   );
 }
 
-function ProjectScopeMenu({ value, groups, environments, onChange }: SettingsScopeMenuProps) {
+function ProjectScopeMenu({
+  value,
+  groups,
+  environments,
+  onChange,
+  focusDefault,
+  listing,
+  pageLabel,
+}: SettingsScopeMenuProps & {
+  readonly focusDefault: boolean;
+  /** The project list, where the visible lead-in reads "Showing". */
+  readonly listing: boolean;
+  readonly pageLabel: string | undefined;
+}) {
   const selected = groups.find((group) => group.projectKey === value.project);
-  const projects = projectScopeMenuGroups(groups, value).map((group) => ({
-    group,
-    machines: settingsScopeProjectMachines(group, environments, true).join(", "),
-  }));
+  const bootstrapped = useAllEnvironmentShellsBootstrapped();
   return (
     <ScopeMenu
-      ariaLabel="Project scope"
+      id="settings-scope-project"
+      focusDefault={focusDefault}
+      // Focus can land here after a page change, so the name says which page it is on.
+      ariaLabel={
+        listing
+          ? "projects shown"
+          : focusDefault && pageLabel
+            ? `project for ${pageLabel} settings`
+            : "project"
+      }
       icon={selected ? <ProjectFavicon project={selected} className="size-3.5 shrink-0" /> : null}
-      label={selected?.displayName ?? (value.project ? "Unavailable project" : "All projects")}
+      label={
+        selected?.displayName ??
+        (value.project ? (bootstrapped ? "Unavailable project" : "Loading…") : "All projects")
+      }
       value={projectAxisValue(value)}
       onChange={(next) => onChange(selectProjectAxis(value, next))}
       searchLabel="Search projects"
       allOption={{ value: ALL_PROJECTS_VALUE, label: "All projects" }}
-      options={projects.map(({ group, machines }) => {
-        const sameName = projects.filter(
-          (other) =>
-            other.group.projectKey !== group.projectKey &&
-            other.group.displayName === group.displayName,
-        );
+      options={projectScopeMenuGroups(groups, value).map((group) => {
+        // Under an environment filter, locations come from that environment's checkouts only.
         const location =
-          sameName.length === 0
-            ? environments.length > 1
-              ? group.workspaceRoot
-              : ""
-            : sameName.some((other) => other.machines === machines)
-              ? `${machines} · ${group.workspaceRoot}`
-              : machines;
+          settingsScopeProjectDistinction(group, groups, environments, value.machine) ??
+          (environments.length > 1 ? settingsScopeProjectPath(group, value.machine) : "");
         return {
           value: group.projectKey,
           label: group.displayName,
-          secondary: group.archived ? ["Archived", location].filter(Boolean).join(" · ") : location,
+          secondary: group.isScratch
+            ? SCRATCH_PROJECT_DESCRIPTION
+            : [
+                ...(group.pinned ? ["Pinned"] : []),
+                ...(group.archived ? ["Archived"] : []),
+                location,
+              ]
+                .filter(Boolean)
+                .join(" · "),
           icon: <ProjectFavicon project={group} className="size-3.5 shrink-0" />,
         };
       })}

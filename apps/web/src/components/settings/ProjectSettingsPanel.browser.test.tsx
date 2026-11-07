@@ -21,9 +21,11 @@ import {
   createRoute,
   createRouter,
   RouterProvider,
+  useLocation,
 } from "@tanstack/react-router";
 import * as Cause from "effect/Cause";
 import { AsyncResult, Atom } from "effect/reactivity";
+import { useSyncExternalStore } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
@@ -34,6 +36,9 @@ type SessionResult = AsyncResult.AsyncResult<AuthSessionState, Error>;
 const state = vi.hoisted(() => ({
   sessions: new Map<EnvironmentId, Atom.Writable<SessionResult>>(),
   projects: [] as Project[],
+  unloaded: new Set<EnvironmentId>(),
+  connecting: new Set<EnvironmentId>(),
+  oneEnvironment: false,
   update:
     vi.fn<
       (request: {
@@ -69,7 +74,9 @@ vi.mock(import("@t3tools/client-runtime/state/session"), async (original) => {
 });
 vi.mock(import("~/state/environments"), async (original) => ({
   ...(await original()),
-  useEnvironments: (() => ({ environments })) as never,
+  useEnvironments: (() => ({
+    environments: state.oneEnvironment ? environments.slice(0, 1) : environments,
+  })) as never,
   readEnvironment: ((id: EnvironmentId) =>
     environments.find((environment) => environment.environmentId === id) ?? null) as never,
   usePrimaryEnvironmentId: () => primaryId,
@@ -83,6 +90,17 @@ vi.mock(import("~/state/entities"), async (original) => ({
       environments.map((environment) => [environment.environmentId, environment.serverConfig]),
     )) as never,
   waitForProjectRemoval: async () => true,
+  useAllEnvironmentShellsBootstrapped: () => state.connecting.size === 0,
+}));
+// Environments that never loaded a snapshot; tests add one to stand for a failed first connection.
+// A connecting environment has no snapshot yet either, but has not settled as disconnected.
+vi.mock(import("~/state/shell"), async (original) => ({
+  ...(await original()),
+  useUnloadedShellEnvironmentIds: (() => state.unloaded) as never,
+  useEnvironmentShellsBootstrapped: ((environmentId: EnvironmentId | null) =>
+    environmentId === null
+      ? state.connecting.size === 0
+      : !state.connecting.has(environmentId)) as never,
 }));
 vi.mock(import("~/state/projects"), async (original) => {
   const actual = await original();
@@ -139,6 +157,7 @@ import { ProjectSettingsPanel } from "./ProjectSettingsPanel";
 import { ProjectsSettings } from "./ProjectsSettings";
 import { SettingsScopeProvider } from "./SettingsScopeContext";
 import { SettingsScopeNotice } from "./SettingsScopeNotice";
+import { SettingsScopeUnavailable } from "./SettingsScopeStatus";
 import { validateSettingsScopeSearch, type SettingsScopeSearch } from "./settingsScope";
 import { retainSettingsScope, validateSettingsRouteSearch } from "./settingsScopeNavigation";
 
@@ -179,6 +198,9 @@ function deferred<T>() {
 function setup() {
   vi.clearAllMocks();
   state.sessions.clear();
+  state.unloaded = new Set();
+  state.connecting = new Set();
+  state.oneEnvironment = false;
   for (const id of [primaryId, remoteId])
     state.sessions.set(id, Atom.make<SessionResult>(writable()).pipe(Atom.keepAlive));
   state.projects = [primaryId, remoteId].map((environmentId) => ({
@@ -245,12 +267,17 @@ async function mountPanel(search: Omit<SettingsScopeSearch, "project"> = {}) {
       />
     ),
   });
+  const worktreesRoute = createRoute({
+    getParentRoute: () => settingsRoute,
+    path: "worktrees",
+    component: () => <p>Worktrees page</p>,
+  });
   const query = new URLSearchParams({ project: key });
   for (const [name, value] of Object.entries(search)) {
     if (value !== undefined) query.set(name, value);
   }
   const router = createRouter({
-    routeTree: rootRoute.addChildren([settingsRoute.addChildren([projectsRoute])]),
+    routeTree: rootRoute.addChildren([settingsRoute.addChildren([projectsRoute, worktreesRoute])]),
     history: createMemoryHistory({ initialEntries: [`/settings/projects?${query}`] }),
   });
   await router.load();
@@ -269,7 +296,7 @@ async function mountPanel(search: Omit<SettingsScopeSearch, "project"> = {}) {
   return { ...screen, router };
 }
 
-async function mountSettings(search: SettingsScopeSearch) {
+async function mountSettings(search: SettingsScopeSearch, hash = "") {
   const searchParams = new URLSearchParams(
     Object.entries(search).flatMap(([key, value]) => (value === undefined ? [] : [[key, value]])),
   );
@@ -287,7 +314,7 @@ async function mountSettings(search: SettingsScopeSearch) {
   const router = createRouter({
     routeTree: route,
     history: createMemoryHistory({
-      initialEntries: [`/settings/projects?${searchParams.toString()}`],
+      initialEntries: [`/settings/projects?${searchParams.toString()}${hash ? `#${hash}` : ""}`],
     }),
   });
   await router.load();
@@ -303,11 +330,11 @@ async function mountSettings(search: SettingsScopeSearch) {
 
 const nameInput = (screen: Screen) =>
   screen.container.querySelector<HTMLInputElement>('[aria-label="Project name"]')!;
-const removeCheckout = (screen: Screen, root: string) =>
-  screen.container.querySelector<HTMLButtonElement>(`[aria-label="Remove checkout ${root}"]`)!;
+const removeCheckout = (screen: Screen, name: string) =>
+  screen.container.querySelector<HTMLButtonElement>(`[aria-label="Remove checkout ${name}"]`)!;
 const removeAll = (screen: Screen) =>
   [...screen.container.querySelectorAll("button")].find((button) =>
-    button.textContent?.includes("Remove all entries"),
+    button.textContent?.includes("Remove project"),
   )!;
 
 async function grant(id: EnvironmentId, result: SessionResult) {
@@ -395,8 +422,8 @@ describe("project settings permissions", () => {
     setup();
     await grant(remoteId, AsyncResult.success(session([])));
     await using screen = await mountPanel();
-    expect(removeCheckout(screen, "/work/remote").disabled).toBe(true);
-    expect(removeCheckout(screen, "/work/primary").disabled).toBe(false);
+    expect(removeCheckout(screen, "/work/remote on remote").disabled).toBe(true);
+    expect(removeCheckout(screen, "/work/primary on primary").disabled).toBe(false);
   });
 
   it("removes a writable checkout while removal of the mixed group stays denied", async () => {
@@ -406,7 +433,7 @@ describe("project settings permissions", () => {
     const initialHref = screen.router.state.location.href;
     expect(removeAll(screen).disabled).toBe(true);
 
-    await userEvent.click(removeCheckout(screen, "/work/primary"));
+    await userEvent.click(removeCheckout(screen, "/work/primary on primary"));
     await vi.waitFor(() => expect(state.delete).toHaveBeenCalledOnce());
     expect(state.delete).toHaveBeenCalledWith({
       environmentId: primaryId,
@@ -436,19 +463,16 @@ describe("project settings permissions", () => {
     expect(state.clearDraft).not.toHaveBeenCalled();
   });
 
-  it("does not save an edit whose grant was revoked mid-edit, and recovers when restored", async () => {
+  it("drops an edit whose grant was revoked mid-edit, and recovers when restored", async () => {
     setup();
     await using screen = await mountPanel();
     await userEvent.fill(nameInput(screen), "Renamed");
+    // Chromium takes focus off a newly disabled input without firing blur, so the field must
+    // drop the unsaved text on its own.
     await grant(remoteId, AsyncResult.success(session([])));
-    // Chromium takes focus off a newly disabled input without firing blur. Send the
-    // focusout so the save attempt runs and hits the same recheck as a real blur.
-    await act(async () => {
-      nameInput(screen).dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
-    });
-    await expectProjectAccessDeniedToast("Failed to rename project");
-    expect(state.update).not.toHaveBeenCalled();
     expect(nameInput(screen).disabled).toBe(true);
+    await expect.element(nameInput(screen)).toHaveValue("Shared repo");
+    expect(state.update).not.toHaveBeenCalled();
 
     await grant(remoteId, writable());
     expect(nameInput(screen).disabled).toBe(false);
@@ -571,13 +595,16 @@ it("opens the fallback search target across all environments from a checkout", a
     </RegistryContext.Provider>,
     { router: false },
   );
-  await userEvent.click(page.getByRole("button", { name: "Open all environments" }));
+  const allProjects = page.getByRole("button", { name: "All projects and environments" });
+  // A search result focuses the way to the scope it needs, as the project list does.
+  await expect.element(allProjects).toHaveFocus();
+  await userEvent.click(allProjects);
   await vi.waitFor(() => expect(router.state.location.search).toEqual({}));
   expect(router.state.location.hash).toBe("fallback-model");
 });
 
 describe("project settings scope", () => {
-  const environmentMenu = () => page.getByRole("button", { name: /^Environment scope:/ });
+  const environmentMenu = () => page.getByRole("button", { name: /, environment$/ });
   const primaryOption = () => page.getByRole("menuitemradio", { name: /^primary/ });
   const remoteOption = () => page.getByRole("menuitemradio", { name: /^remote/ });
 
@@ -591,6 +618,223 @@ describe("project settings scope", () => {
     await expect.element(remoteOption()).toBeVisible();
   });
 
+  it("lists loaded projects with a way to reconnect an environment that never loaded", async () => {
+    setup();
+    state.projects = state.projects.filter((project) => project.environmentId === primaryId);
+    state.unloaded = new Set([remoteId]);
+    await using _screen = await mountSettings({});
+
+    await expect
+      .element(
+        page.getByText(/^Choose a project to manage .+ Reconnect remote to load its projects\.$/),
+      )
+      .toBeVisible();
+    await expect.element(page.getByRole("link", { name: "Open Environments" })).toBeVisible();
+  });
+
+  it("says an environment has no projects while another is still connecting", async () => {
+    setup();
+    state.projects = [];
+    state.unloaded = new Set([remoteId]);
+    state.connecting = new Set([remoteId]);
+    await using _screen = await mountSettings({ machine: primaryId });
+
+    await expect.element(page.getByText("No projects on primary.")).toBeVisible();
+  });
+
+  it("offers to add a project when the only environment has none", async () => {
+    setup();
+    state.oneEnvironment = true;
+    state.projects = [];
+    await using _screen = await mountSettings({ machine: primaryId });
+
+    await expect.element(page.getByRole("button", { name: "Add project" })).toBeVisible();
+    expect(page.getByRole("button", { name: "Show all environments" }).query()).toBeNull();
+  });
+
+  it("keeps a waiting search's message and Cancel when the list is empty", async () => {
+    setup();
+    state.projects = state.projects.filter((project) => project.environmentId === remoteId);
+    await using _screen = await mountSettings({ machine: primaryId }, "project-remove");
+
+    await expect
+      .element(page.getByText(/^Choose a project to jump to "Remove project"\./))
+      .toBeVisible();
+    // The result takes focus, as a list's first choice would.
+    await expect.element(page.getByRole("button", { name: "Cancel" })).toHaveFocus();
+    await expect.element(page.getByText("No projects on primary.")).toBeVisible();
+  });
+
+  it("leaves focus where the user moved it when projects arrive under a waiting search", async () => {
+    setup();
+    const bravo = {
+      ...state.projects[0]!,
+      id: ProjectId.make("project-bravo"),
+      title: "Bravo",
+      workspaceRoot: "/work/bravo",
+      repositoryIdentity: null,
+    };
+    state.projects = [];
+    // Projects arrive without a navigation, the way an environment's snapshot does.
+    const listeners = new Set<() => void>();
+    const subscribe = (listener: () => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    };
+    const root = createRootRoute({
+      validateSearch: validateSettingsScopeSearch,
+      component: function WaitingSearch() {
+        // Stands in for the settings route, which shows the empty list's note until projects load.
+        const hash = useLocation({ select: (location) => location.hash });
+        useSyncExternalStore(subscribe, () => state.projects);
+        return (
+          <SettingsScopeProvider search={root.useSearch()} onChange={() => {}}>
+            <input aria-label="Search settings" />
+            {hash && state.projects.length > 0 ? (
+              <SettingsScopeNotice key={hash} target="project" targetId={hash}>
+                Choose a project to jump to "Remove project".
+              </SettingsScopeNotice>
+            ) : (
+              <ProjectsSettings />
+            )}
+          </SettingsScopeProvider>
+        );
+      },
+    });
+    const router = createRouter({
+      routeTree: root,
+      history: createMemoryHistory({ initialEntries: ["/settings/projects"] }),
+    });
+    await router.load();
+    // The settings route tree above validates scope search params, which the default router lacks.
+    await using _screen = await render(
+      <RegistryContext.Provider value={appAtomRegistry}>
+        <RouterProvider router={router} />
+      </RegistryContext.Provider>,
+      { router: false },
+    );
+    await router.navigate({ to: "/settings/projects", search: {}, hash: "project-remove" });
+    await expect.element(page.getByRole("button", { name: "Cancel" })).toHaveFocus();
+    const search = page.getByRole("textbox", { name: "Search settings" });
+    await userEvent.click(search);
+
+    state.projects = [bravo];
+    await act(async () => {
+      for (const listener of listeners) listener();
+    });
+
+    await expect.element(page.getByRole("button", { name: "Bravo", exact: true })).toBeVisible();
+    await expect.element(search).toHaveFocus();
+  });
+
+  it("focuses a new search's first project after returning to the list", async () => {
+    setup();
+    const root = createRootRoute({
+      validateSearch: validateSettingsScopeSearch,
+      component: function ProjectsWithSearch() {
+        // Stands in for the settings route, which lists projects while a search needs one.
+        const hash = useLocation({ select: (location) => location.hash });
+        return (
+          <SettingsScopeProvider search={root.useSearch()} onChange={() => {}}>
+            {hash ? (
+              <SettingsScopeNotice key={hash} target="project" targetId={hash}>
+                Choose a project to jump to "Remove project".
+              </SettingsScopeNotice>
+            ) : (
+              <ProjectsSettings />
+            )}
+          </SettingsScopeProvider>
+        );
+      },
+    });
+    const router = createRouter({
+      routeTree: root,
+      history: createMemoryHistory({
+        initialEntries: [`/settings/projects?${new URLSearchParams({ project: projectKey() })}`],
+      }),
+    });
+    await router.load();
+    // The settings route tree above validates scope search params, which the default router lacks.
+    await using _screen = await render(
+      <RegistryContext.Provider value={appAtomRegistry}>
+        <RouterProvider router={router} />
+      </RegistryContext.Provider>,
+      { router: false },
+    );
+    await expect.element(page.getByRole("textbox", { name: "Project name" })).toBeVisible();
+    const row = page.getByRole("button", { name: "Shared repo", exact: true });
+
+    await router.navigate({ to: "/settings/projects", search: {} });
+    await expect.element(row).toBeVisible();
+    await router.navigate({ to: "/settings/projects", search: {}, hash: "project-remove" });
+
+    await expect.element(page.getByText(/^Choose a project to jump to/)).toBeVisible();
+    await expect.element(row).toHaveFocus();
+  });
+
+  it("leaves focus where the user moved it when a search's project list re-sorts", async () => {
+    setup();
+    const project = (title: string) => ({
+      ...state.projects[0]!,
+      id: ProjectId.make(`project-${title}`),
+      title,
+      workspaceRoot: `/work/${title}`,
+      repositoryIdentity: null,
+    });
+    state.projects = [project("Bravo"), project("Charlie")];
+    const root = createRootRoute({
+      validateSearch: validateSettingsScopeSearch,
+      component: function SearchList() {
+        // A hash change re-renders the list, standing in for another environment's projects arriving.
+        useLocation({ select: (location) => location.hash });
+        return (
+          <SettingsScopeProvider search={root.useSearch()} onChange={() => {}}>
+            <SettingsScopeNotice target="project" targetId="project-remove">
+              Choose a project to jump to "Remove project".
+            </SettingsScopeNotice>
+          </SettingsScopeProvider>
+        );
+      },
+    });
+    const router = createRouter({
+      routeTree: root,
+      history: createMemoryHistory({ initialEntries: ["/settings/projects"] }),
+    });
+    await router.load();
+    // The settings route tree above validates scope search params, which the default router lacks.
+    await using _screen = await render(
+      <RegistryContext.Provider value={appAtomRegistry}>
+        <RouterProvider router={router} />
+      </RegistryContext.Provider>,
+      { router: false },
+    );
+    const row = (name: string) => page.getByRole("button", { name, exact: true });
+    await expect.element(row("Bravo")).toHaveFocus();
+    await userEvent.tab();
+    await expect.element(row("Charlie")).toHaveFocus();
+
+    state.projects = [project("Alpha"), ...state.projects];
+    await router.navigate({ to: "/settings/projects", hash: "loaded" });
+
+    await expect.element(row("Alpha")).toBeVisible();
+    await expect.element(row("Charlie")).toHaveFocus();
+  });
+
+  it.each([
+    [{}, false],
+    [{ machine: primaryId }, false],
+    // A filter on an environment that is gone can only be cleared from the picker.
+    [{ machine: remoteId }, true],
+  ])("with one environment, shows the environment picker for %o: %s", async (search, shown) => {
+    setup();
+    state.oneEnvironment = true;
+    state.projects = state.projects.filter((project) => project.environmentId === primaryId);
+    await using _screen = await mountSettings(search);
+
+    await expect.element(page.getByRole("button", { name: /, projects shown$/ })).toBeVisible();
+    expect(environmentMenu().query() !== null).toBe(shown);
+  });
+
   it("offers only the selected project's checkout environments", async () => {
     setup();
     state.projects = state.projects.filter((project) => project.environmentId === primaryId);
@@ -600,6 +844,61 @@ describe("project settings scope", () => {
     await userEvent.click(environmentMenu());
     await expect.element(primaryOption()).toBeVisible();
     await expect.element(remoteOption()).not.toBeInTheDocument();
+  });
+
+  it("asks to reconnect an unloaded environment before calling a project gone", async () => {
+    setup();
+    state.projects = state.projects.filter((project) => project.environmentId === primaryId);
+    state.unloaded = new Set([remoteId]);
+    await using _screen = await mountSettings({ project: "removed-project" });
+
+    await expect
+      .element(page.getByText("Reconnect remote to load its projects.", { exact: true }))
+      .toBeVisible();
+    await expect
+      .element(page.getByText("This project was removed, or the link to it is out of date."))
+      .not.toBeInTheDocument();
+    const back = page.getByRole("link", { name: "Back to projects" });
+    await expect.element(back).toBeVisible();
+    // The list shares the project page's path, so a loose match would call the way back the current page.
+    await expect.element(back).not.toHaveAttribute("aria-current");
+  });
+
+  it("offers every project when a missing project is chosen on another settings page", async () => {
+    setup();
+    const root = createRootRoute({
+      validateSearch: validateSettingsScopeSearch,
+      component: function WorktreesPage() {
+        return (
+          <SettingsScopeProvider
+            search={root.useSearch()}
+            onChange={(next) => void router.navigate({ to: ".", search: () => next })}
+          >
+            <SettingsScopeUnavailable />
+          </SettingsScopeProvider>
+        );
+      },
+    });
+    const router = createRouter({
+      routeTree: root,
+      history: createMemoryHistory({
+        initialEntries: ["/settings/worktrees?project=removed-project"],
+      }),
+    });
+    await router.load();
+    // The settings route tree above validates scope search params, which the default router lacks.
+    await using _screen = await render(
+      <RegistryContext.Provider value={appAtomRegistry}>
+        <RouterProvider router={router} />
+      </RegistryContext.Provider>,
+      { router: false },
+    );
+
+    await expect
+      .element(page.getByText("This project was removed, or the link to it is out of date."))
+      .toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "Show all projects" }));
+    await vi.waitFor(() => expect(router.state.location.search).toEqual({}));
   });
 
   it("keeps an unknown project recoverable from any environment", async () => {
@@ -620,14 +919,18 @@ describe("project settings scope", () => {
   });
 
   it.each([
-    [undefined, "This project has no checkout on this environment."],
+    [undefined, false, "This project has no checkout on this environment."],
     [
       "removed-checkout",
+      false,
       "This checkout is no longer available in the selected project and environment.",
     ],
-  ])("recovers a stale environment link with checkout %s", async (checkout, message) => {
+    // An environment that never loaded cannot show the checkout is gone.
+    [undefined, true, "Reconnect remote to load its projects."],
+  ])("recovers a stale environment link with checkout %s", async (checkout, unloaded, message) => {
     setup();
     state.projects = state.projects.filter((project) => project.environmentId === primaryId);
+    if (unloaded) state.unloaded = new Set([remoteId]);
     const key = projectKey();
     await using screen = await mountSettings({
       project: key,
@@ -636,10 +939,10 @@ describe("project settings scope", () => {
     });
 
     await expect.element(page.getByText(message, { exact: true })).toBeVisible();
-    await expect.element(page.getByRole("button", { name: /^Project scope:/ })).toBeVisible();
     await expect
-      .element(page.getByRole("button", { name: "Environment scope: remote" }))
+      .element(page.getByRole("button", { name: /, project( for .+ settings)?$/ }))
       .toBeVisible();
+    await expect.element(page.getByRole("button", { name: "remote, environment" })).toBeVisible();
     await userEvent.click(page.getByRole("button", { name: "Show all environments" }));
 
     await expect
@@ -647,7 +950,7 @@ describe("project settings scope", () => {
       .toHaveValue("Shared repo");
     expect(screen.router.state.location.search).toEqual({ project: key });
     await expect
-      .element(page.getByRole("button", { name: "Environment scope: All environments" }))
+      .element(page.getByRole("button", { name: "All environments, environment" }))
       .toBeVisible();
     await expect.element(page.getByText(message, { exact: true })).not.toBeInTheDocument();
     await expect
@@ -658,7 +961,16 @@ describe("project settings scope", () => {
 
 it("returns to the project overview after removal, clearing the selection but keeping the environment", async () => {
   setup();
-  state.projects = [state.projects[1]!];
+  const remote = state.projects[1]!;
+  // The next project on the list takes the removed one's place, however its page was opened.
+  const zeta = {
+    ...remote,
+    id: ProjectId.make("project-zeta"),
+    title: "Zeta",
+    workspaceRoot: "/work/zeta",
+    repositoryIdentity: null,
+  };
+  state.projects = [remote, zeta];
   await using screen = await mountPanel({ machine: remoteId, checkout: "remote:/work/remote" });
   const removeProject = [...screen.container.querySelectorAll("button")].find(
     (button) => button.textContent === "Remove project",
@@ -670,6 +982,25 @@ it("returns to the project overview after removal, clearing the selection but ke
     expect(screen.router.state.location.pathname).toBe("/settings/projects");
     expect(screen.router.state.location.search).toEqual({ machine: remoteId });
   });
+  expect(screen.router.state.location.state.settingsFocusProject).toBe(`${remoteId}:/work/zeta`);
+});
+
+it("focuses the link a project's page was left by on Back, and only on Back", async () => {
+  setup();
+  await using screen = await mountPanel();
+  const worktrees = page.getByRole("link", { name: "Worktrees" });
+
+  await userEvent.click(worktrees);
+  await expect.element(page.getByText("Worktrees page")).toBeVisible();
+  await act(async () => screen.router.history.back());
+  await expect.element(worktrees).toHaveFocus();
+
+  // Opening the page afresh starts at its top, wherever it was last left.
+  await userEvent.click(worktrees);
+  await expect.element(page.getByText("Worktrees page")).toBeVisible();
+  await act(() => screen.router.navigate({ to: "/settings/projects" }));
+  await expect.element(nameInput(screen)).toBeVisible();
+  await expect.element(worktrees).not.toHaveFocus();
 });
 
 describe("project name composition", () => {
@@ -702,5 +1033,22 @@ describe("project name composition", () => {
       "日本語の名前",
       "日本語の名前",
     ]);
+  });
+
+  it("shows the saved name again after refusing an empty one", async () => {
+    setup();
+    await using screen = await mountPanel();
+
+    await rename(screen, "   ");
+
+    await vi.waitFor(() =>
+      expect(state.toast).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "Project name can't be empty" }),
+      ),
+    );
+    await expect.element(nameInput(screen)).toHaveValue("Shared repo");
+    expect(state.update).not.toHaveBeenCalled();
+    // Enter saves without dropping focus to the page.
+    await expect.element(nameInput(screen)).toHaveFocus();
   });
 });

@@ -106,10 +106,18 @@ const inlineButtonVariants = cva(
     defaultVariants: { tone: "default" },
     variants: {
       touchTarget: {
-        padded: "pointer-coarse:min-h-11 pointer-coarse:px-1.5",
+        // Standalone links: room for the focus ring, offset so the text stays where it was.
+        padded:
+          "-mx-1 rounded-sm px-1 pointer-coarse:mx-0 pointer-coarse:min-h-11 pointer-coarse:px-1.5",
+        // Links inside a sentence: room for the focus ring without moving the text, and a wider
+        // hit area on touch that never overlaps wrapped lines.
+        inline:
+          "-mx-0.75 -my-0.5 rounded-sm px-0.75 py-0.5 pointer-coarse:relative pointer-coarse:after:absolute pointer-coarse:after:-inset-x-1 pointer-coarse:after:inset-y-0",
       },
       tone: {
         default: "text-foreground",
+        // Links inside running text keep an underline, so they read as links without hover.
+        link: "text-foreground underline decoration-foreground/40 hover:decoration-foreground",
         muted: "text-muted-foreground hover:text-foreground",
         destructive: "text-destructive/80 hover:text-destructive",
         picker:

@@ -13,6 +13,7 @@ import {
   getThreadAutoSettlementSearchAvailability,
   isSettingsSearchScopeAvailable,
   movedSettingsPath,
+  PROJECT_OVERRIDE_PATHS,
   searchSettings,
   SETTINGS_NAV_GROUPS,
   SETTINGS_SEARCH_ITEMS,
@@ -204,6 +205,14 @@ describe("searchSettings", () => {
   it("keeps catalog result ids unique", () => {
     const ids = SETTINGS_SEARCH_ITEMS.map((item) => item.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("links a project's page to every page with project overrides", () => {
+    const linked: readonly string[] = PROJECT_OVERRIDE_PATHS;
+    const overridden = SETTINGS_SEARCH_ITEMS.filter(
+      (item) => "scope" in item && item.scope === "project-defaults",
+    );
+    expect(overridden.map((item) => item.to).filter((page) => !linked.includes(page))).toEqual([]);
   });
 });
 

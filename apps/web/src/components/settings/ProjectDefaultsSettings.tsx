@@ -145,7 +145,12 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
       }
       status={
         mixedModel
-          ? `${automaticModel ? "Automatic defaults differ." : "Defaults differ."} Select one environment or choose a shared model to edit effort.`
+          ? `${automaticModel ? "Automatic defaults differ" : "Defaults differ"}${
+              // Choosing the environment cannot settle checkouts that all live on it.
+              new Set(targets.map((candidate) => candidate.environmentId)).size === 1
+                ? " between checkouts. Choose a shared model to edit effort."
+                : ". Select one environment or choose a shared model to edit effort."
+            }`
           : effortDisabledReason
       }
       resetAction={

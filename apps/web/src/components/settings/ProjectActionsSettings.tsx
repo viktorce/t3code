@@ -113,7 +113,7 @@ export function ProjectActionsSettings() {
         serverScoped
         settingKeys={["defaultProjectScripts"]}
         mixed={mixed}
-        title="Actions"
+        title="Action list"
         description="Commands that run in this project's checkout or its worktree, with optional shortcuts."
         onResetOverride={() => void persist(() => null)}
         control={

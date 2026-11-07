@@ -1,33 +1,33 @@
 import { EnvironmentId } from "@t3tools/contracts";
-import { LayersIcon } from "lucide-react";
 
-import { Button } from "../ui/button";
+import { useEnvironments, type EnvironmentPresentation } from "../../state/environments";
+import { useUnloadedShellEnvironmentIds } from "../../state/shell";
 import { ProjectSettingsPanel } from "./ProjectSettingsPanel";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { SettingsScopeNotice } from "./SettingsScopeNotice";
-import { SettingsPageContainer } from "./settingsLayout";
-import { ALL_ENVIRONMENTS_VALUE, selectEnvironmentAxis } from "./settingsScopeAxis";
+import { SettingsScopeStatus, SettingsScopeUnavailable } from "./SettingsScopeStatus";
+import {
+  projectScopeMenuGroups,
+  settingsScopeEnvironmentLabel,
+  settingsScopeReconnectMessage,
+} from "./settingsScopeAxis";
 
 export function ProjectsSettings() {
-  const { search: value, scope, selectScope } = useSettingsScope();
-  const unavailable =
-    scope.kind === "unavailable" ? (
-      <SettingsPageContainer>
-        <div className="flex flex-col items-start gap-3">
-          <p className="text-sm text-muted-foreground">{scope.message}</p>
-          {value.machine || value.checkout ? (
-            <Button
-              variant="outline"
-              size="xs"
-              onClick={() => selectScope(selectEnvironmentAxis(value, ALL_ENVIRONMENTS_VALUE))}
-            >
-              <LayersIcon />
-              Show all environments
-            </Button>
-          ) : null}
-        </div>
-      </SettingsPageContainer>
-    ) : null;
+  const { search: value, scope, groups } = useSettingsScope();
+  const { environments } = useEnvironments();
+  // A disconnected environment that never loaded cannot prove the list is empty.
+  const unloadedIds = useUnloadedShellEnvironmentIds();
+  const listedGroups = projectScopeMenuGroups(groups, value);
+  const environment = environments.find((entry) => entry.environmentId === value.machine);
+  const unloaded = environments.filter((entry) => unloadedIds.has(entry.environmentId));
+  const machineUnloaded = environment ? unloadedIds.has(environment.environmentId) : false;
+  const reconnect = (targets: readonly EnvironmentPresentation[]) => (
+    <SettingsScopeStatus
+      message={settingsScopeReconnectMessage(targets, environments)}
+      action="reconnect"
+    />
+  );
+  const unavailable = scope.kind === "unavailable" ? <SettingsScopeUnavailable /> : null;
   // Keep the panel mounted so it can follow members when regrouping changes the project key.
   const projectScope =
     scope.kind === "project" ||
@@ -45,9 +45,24 @@ export function ProjectsSettings() {
         />
       ) : unavailable ? (
         unavailable
+      ) : value.machine && listedGroups.length === 0 ? (
+        environment && machineUnloaded ? (
+          reconnect([environment])
+        ) : (
+          <SettingsScopeStatus
+            message={`No projects on ${environment ? settingsScopeEnvironmentLabel(environment, environments) : "this environment"}.`}
+            action="add-project"
+          />
+        )
+      ) : listedGroups.length === 0 ? (
+        unloaded.length > 0 ? (
+          reconnect(unloaded)
+        ) : (
+          <SettingsScopeStatus message="No projects yet." action="add-project" />
+        )
       ) : (
         <SettingsScopeNotice target="project">
-          Choose a project to manage its name, icon, checkouts and actions.
+          Choose a project to manage its name, icon, new-thread defaults, actions and checkouts.
         </SettingsScopeNotice>
       )}
     </div>

@@ -67,28 +67,63 @@ export const liveShellEnvironmentIdsAtom = Atom.make((get) => {
   return next;
 }).pipe(Atom.withLabel("web-live-shell-environment-ids"));
 
+let previousUnloadedEnvironmentIds: ReadonlySet<EnvironmentId> = new Set();
+/** Environments with no snapshot yet, so nothing here can say which projects they hold. */
+export const unloadedShellEnvironmentIdsAtom = Atom.make((get) => {
+  const next = new Set<EnvironmentId>();
+  for (const environmentId of enabledEnvironmentIds(get(environmentCatalog.catalogValueAtom))) {
+    if (!get(environmentShell.hasSnapshotAtom(environmentId))) next.add(environmentId);
+  }
+  if (
+    next.size === previousUnloadedEnvironmentIds.size &&
+    [...next].every((environmentId) => previousUnloadedEnvironmentIds.has(environmentId))
+  ) {
+    return previousUnloadedEnvironmentIds;
+  }
+  previousUnloadedEnvironmentIds = next;
+  return next;
+}).pipe(Atom.withLabel("web-unloaded-shell-environment-ids"));
+
+export function useUnloadedShellEnvironmentIds(): ReadonlySet<EnvironmentId> {
+  return useAtomValue(unloadedShellEnvironmentIdsAtom);
+}
+
+/** The environment has a snapshot or has settled as disconnected, so its projects are known. */
+export const environmentShellBootstrappedAtom = Atom.family((environmentId: EnvironmentId) =>
+  Atom.make((get) => {
+    if (Option.isSome(get(environmentShell.stateValueAtom(environmentId)).snapshot)) {
+      return true;
+    }
+    const connection = AsyncResult.getOrElse(
+      get(environmentCatalog.stateAtom(environmentId)),
+      () => AVAILABLE_CONNECTION_STATE,
+    );
+    return (
+      connectionProjectionPhase(connection) === "disconnected" &&
+      !(connection.phase === "backoff" && connection.desired && connection.attempt <= 2)
+    );
+  }).pipe(Atom.withLabel(`web-environment-shell-bootstrapped:${environmentId}`)),
+);
+
 export const allEnvironmentShellsBootstrappedAtom = Atom.make((get) => {
   const catalog = AsyncResult.value(get(environmentCatalog.catalogAtom));
   if (Option.isNone(catalog)) {
     return false;
   }
   for (const environmentId of enabledEnvironmentIds(catalog.value)) {
-    if (Option.isSome(get(environmentShell.stateValueAtom(environmentId)).snapshot)) {
-      continue;
-    }
-    const connection = AsyncResult.getOrElse(
-      get(environmentCatalog.stateAtom(environmentId)),
-      () => AVAILABLE_CONNECTION_STATE,
-    );
-    if (connectionProjectionPhase(connection) !== "disconnected") {
-      return false;
-    }
-    if (connection.phase === "backoff" && connection.desired && connection.attempt <= 2) {
-      return false;
-    }
+    if (!get(environmentShellBootstrappedAtom(environmentId))) return false;
   }
   return true;
 }).pipe(Atom.withLabel("web-all-environment-shells-bootstrapped"));
+
+/** Whether one environment's projects are known, or every environment's without one. */
+export function useEnvironmentShellsBootstrapped(environmentId: EnvironmentId | null): boolean {
+  return useAtomValue(
+    environmentId === null
+      ? allEnvironmentShellsBootstrappedAtom
+      : environmentShellBootstrappedAtom(environmentId),
+  );
+}
 
 // Catalog can precede primary discovery; an empty or incomplete catalog cannot prove absence.
 function catalogIsComplete(

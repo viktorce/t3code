@@ -72,7 +72,8 @@ export function browseInputEndPaddingClass(input: {
 export type SearchOverlayMode = "command" | "files" | "content";
 
 export type CommandPaletteOpenIntent =
-  | { readonly kind: "add-project" | "new-thread-in" | "change-theme" }
+  | { readonly kind: "add-project"; readonly environmentId?: EnvironmentId }
+  | { readonly kind: "new-thread-in" | "change-theme" }
   | {
       readonly kind: "search";
       readonly query: string;
@@ -98,7 +99,7 @@ export type CommandPaletteUiAction =
       readonly query: string;
       readonly linkedThreads?: CommandPaletteLinkedThreads;
     }
-  | { readonly _tag: "OpenAddProject" }
+  | { readonly _tag: "OpenAddProject"; readonly environmentId?: EnvironmentId }
   | { readonly _tag: "OpenNewThreadIn" }
   | { readonly _tag: "OpenChangeTheme" }
   | {
@@ -153,7 +154,10 @@ export function reduceCommandPaletteUiState(
         ...(action.linkedThreads ? { linkedThreads: action.linkedThreads } : {}),
       });
     case "OpenAddProject":
-      return openWithIntent({ kind: "add-project" });
+      return openWithIntent({
+        kind: "add-project",
+        ...(action.environmentId ? { environmentId: action.environmentId } : {}),
+      });
     case "OpenNewThreadIn":
       return openWithIntent({ kind: "new-thread-in" });
     case "OpenChangeTheme":
@@ -170,7 +174,14 @@ export type AddProjectEntry =
 export function resolveAddProjectEntry(
   options: ReadonlyArray<Pick<AddProjectEnvironmentOption, "environmentId">>,
   defaultEnvironmentId: EnvironmentId | null,
+  requestedEnvironmentId?: EnvironmentId,
 ): AddProjectEntry {
+  // A request for one environment never falls through to another.
+  if (requestedEnvironmentId !== undefined) {
+    return options.some((option) => option.environmentId === requestedEnvironmentId)
+      ? { kind: "choose-source", environmentId: requestedEnvironmentId }
+      : { kind: "connect-environment" };
+  }
   if (options.length === 0) return { kind: "connect-environment" };
   if (options.length > 1 || defaultEnvironmentId === null) return { kind: "choose-environment" };
   return { kind: "choose-source", environmentId: defaultEnvironmentId };

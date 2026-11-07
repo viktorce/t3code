@@ -191,7 +191,9 @@ export function createWorkspaceFocusController(doc: Document) {
       const target = area.querySelector<HTMLElement>(selector);
       if (!target || !isWorkspaceElementVisible(target)) return false;
       target.focus({ preventScroll: true });
-      return doc.activeElement === target;
+      if (doc.activeElement !== target) return false;
+      revealInScrollers(target);
+      return true;
     }
     return focusArea(area, restore);
   };
@@ -247,6 +249,9 @@ export function createWorkspaceFocusController(doc: Document) {
     if (!(lost instanceof HTMLElement) || event.relatedTarget) return;
     const areaName = workspaceArea(lost)?.dataset.workspaceArea;
     const label = lost.getAttribute("aria-label");
+    // A container can name the element that takes focus when a control inside it disappears.
+    const fallbackId = lost.closest<HTMLElement>("[data-workspace-focus-fallback]")?.dataset
+      .workspaceFocusFallback;
     requestAnimationFrame(() => {
       if (doc.activeElement !== doc.body || !doc.hasFocus() || isWorkspaceElementVisible(lost))
         return;
@@ -257,8 +262,16 @@ export function createWorkspaceFocusController(doc: Document) {
             (label && element.getAttribute("aria-label") === label)) &&
           isWorkspaceElementVisible(element),
       );
-      if (remounted) remounted.focus({ preventScroll: true });
-      else if (!areaName || !focus(areaName)) focus("content");
+      if (remounted) {
+        remounted.focus({ preventScroll: true });
+        return;
+      }
+      const fallback = fallbackId ? doc.getElementById(fallbackId) : null;
+      if (fallback && isWorkspaceElementVisible(fallback)) {
+        fallback.focus({ preventScroll: true });
+        if (doc.activeElement === fallback) return;
+      }
+      if (!areaName || !focus(areaName)) focus("content");
     });
   };
   doc.addEventListener("focusout", recover);
@@ -364,6 +377,11 @@ export function moveWorkspaceFocus(direction: 1 | -1, fromArea?: string): boolea
 export function requestWorkspaceFocus(target: WorkspaceFocusTarget) {
   focusRequestVersion++;
   controller?.request(target);
+}
+
+/** A destination that focused its own target, so the closing palette leaves focus there. */
+export function claimWorkspaceFocus() {
+  focusRequestVersion++;
 }
 
 export function requestWorkspaceContentFocus() {

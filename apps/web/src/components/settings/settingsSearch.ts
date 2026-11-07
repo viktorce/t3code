@@ -155,6 +155,18 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
   },
 ];
 
+/** Pages that hold project overrides, in sidebar order. A project's page links to each one. */
+export const PROJECT_OVERRIDE_PATHS = [
+  "/settings/voice",
+  "/settings/providers",
+  "/settings/threads",
+  "/settings/browser",
+  "/settings/devices",
+  "/settings/source-control",
+  "/settings/worktrees",
+  "/settings/maintenance",
+] as const satisfies readonly SettingsPath[];
+
 export function keybindingSearchAnchorId<Command extends KeybindingCommand>(command: Command) {
   return `keybinding-${command}` as const;
 }
@@ -267,10 +279,40 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["model workspace environments projects inheritance checkout"],
   },
   {
-    id: "project-overview",
-    title: "Project overview",
+    id: "project-name",
+    title: "Project name",
     to: "/settings/projects",
-    searchTerms: ["name icon emoji image checkout remove delete"],
+    searchTerms: ["name rename title"],
+  },
+  {
+    id: "project-icon",
+    title: "Project icon",
+    to: "/settings/projects",
+    searchTerms: ["icon favicon emoji image logo monogram color"],
+  },
+  {
+    id: "project-pin",
+    title: "Pin project",
+    to: "/settings/projects",
+    searchTerms: ["pin unpin pinned first"],
+  },
+  {
+    id: "project-archive",
+    title: "Archive project",
+    to: "/settings/projects",
+    searchTerms: ["archive unarchive hide"],
+  },
+  {
+    id: "project-checkouts",
+    title: "Checkouts",
+    to: "/settings/projects",
+    searchTerms: ["checkout machine path grouping rule"],
+  },
+  {
+    id: "project-remove",
+    title: "Remove project",
+    to: "/settings/projects",
+    searchTerms: ["delete remove checkout entries danger"],
   },
   {
     id: "default-model",
@@ -1367,6 +1409,12 @@ export function getSettingsSearchTargetScope(targetId: string) {
         ...(item.requiresThreadAutoSettlement ? { requiresThreadAutoSettlement: true } : {}),
       }
     : null;
+}
+
+/** Project settings, and defaults a project can override, open for the project in view. */
+export function settingsSearchTargetFollowsProject(targetId: string): boolean {
+  const scope = getSettingsSearchTargetScope(targetId)?.scope;
+  return scope === "project" || scope === "project-defaults";
 }
 
 interface AutoSettlementSearchEnvironment {

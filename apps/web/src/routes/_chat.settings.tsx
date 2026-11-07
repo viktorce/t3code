@@ -1,6 +1,13 @@
 import { workspaceAreaProps } from "../lib/workspaceFocus";
-import { Outlet, createFileRoute, redirect, useLocation } from "@tanstack/react-router";
-import { useState, type ReactNode } from "react";
+import {
+  Navigate,
+  Outlet,
+  createFileRoute,
+  redirect,
+  useLocation,
+  useRouter,
+} from "@tanstack/react-router";
+import { useEffect, useState, type ReactNode } from "react";
 import { RotateCcwIcon } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { useSettingsRestore } from "../components/settings/SettingsPanels";
@@ -14,8 +21,12 @@ import {
 } from "../components/settings/SettingsScopeContext";
 import { useEnvironments } from "../state/environments";
 import { SettingsScopeNotice } from "../components/settings/SettingsScopeNotice";
+import {
+  SettingsScopeStatus,
+  SettingsScopeUnavailable,
+} from "../components/settings/SettingsScopeStatus";
+import { projectScopeMenuGroups } from "../components/settings/settingsScopeAxis";
 import { SETTINGS_DEVICE_ONLY_PATHS } from "../components/settings/SettingsScopeSentence";
-import { SettingsPageContainer } from "../components/settings/settingsLayout";
 import {
   retainSettingsScope,
   validateSettingsRouteSearch,
@@ -43,7 +54,7 @@ function RestoreDeviceDefaultsButton({ onRestored }: { onRestored: () => void })
 }
 
 function SettingsScopeBoundary({ pathname, children }: { pathname: string; children: ReactNode }) {
-  const { scope, connectedEnvironments } = useSettingsScope();
+  const { scope, connectedEnvironments, groups, search } = useSettingsScope();
   const { environments } = useEnvironments();
   const hash = useLocation({ select: (location) => location.hash });
   const searchTarget = getSettingsSearchTargetScope(hash);
@@ -63,8 +74,8 @@ function SettingsScopeBoundary({ pathname, children }: { pathname: string; child
         eligibleEnvironmentIds={autoSettlementAvailability.eligibleEnvironmentIds}
       >
         {autoSettlementAvailability.eligibleEnvironmentIds.length > 0
-          ? `${searchTarget.title} requires a supporting environment. Choose one to continue.`
-          : `${searchTarget.title} requires a supporting environment. Connect or update an environment to continue.`}
+          ? `Choose an environment that supports "${searchTarget.title}".`
+          : `"${searchTarget.title}" needs a connected environment running a newer T3 Code.`}
       </SettingsScopeNotice>
     );
   }
@@ -79,28 +90,56 @@ function SettingsScopeBoundary({ pathname, children }: { pathname: string; child
       searchTarget.scope === "checkout"
         ? searchTarget.scope
         : "all";
+    // With nothing to choose, the project list's own empty state offers the way out.
+    if (
+      pathname === "/settings/projects" &&
+      target === "project" &&
+      projectScopeMenuGroups(groups, search).length === 0
+    ) {
+      return children;
+    }
+    // The scope line hides a lone environment, so a result that only needs it goes straight there.
+    if (target === "environment" && scope.kind === "all" && environments.length === 1) {
+      return (
+        <Navigate
+          to={pathname}
+          search={{
+            project: undefined,
+            machine: environments[0]!.environmentId,
+            checkout: undefined,
+          }}
+          hash={hash}
+          replace
+        />
+      );
+    }
+    const projectName =
+      scope.kind === "project" || scope.kind === "checkout" ? scope.group.displayName : null;
+    // A lone environment's settings apply to every project, in the words the scope line uses.
+    const shownTarget = target === "environment" && environments.length === 1 ? "all" : target;
     return (
-      <SettingsScopeNotice target={target} targetId={hash}>
-        {`${searchTarget.title} is not available for the selected target. Choose its owning scope to continue.`}
+      // Keyed by target so each new search result lands on a fresh list and takes focus.
+      <SettingsScopeNotice key={hash} target={shownTarget} targetId={hash}>
+        {shownTarget === "all"
+          ? `"${searchTarget.title}" applies to every project, so it can't be set for ${projectName ?? "one project"}. Choose all projects to jump to it.`
+          : shownTarget === "environment" && projectName
+            ? // Choosing an environment leaves the project, so the message says why.
+              `"${searchTarget.title}" is set per environment, so it can't be set for ${projectName}. Choose an environment to jump to it.`
+            : `Choose ${shownTarget === "environment" ? "an environment" : `a ${shownTarget}`} to jump to "${searchTarget.title}".`}
       </SettingsScopeNotice>
     );
   }
   if (SETTINGS_DEVICE_ONLY_PATHS.has(pathname) || pathname === "/settings/projects") {
     return children;
   }
-  if (scope.kind === "unavailable")
-    return (
-      <SettingsPageContainer>
-        <p className="text-sm text-muted-foreground">{scope.message}</p>
-      </SettingsPageContainer>
-    );
+  // The same notes as the Projects page, so a project reads the same everywhere.
+  if (scope.kind === "unavailable") return <SettingsScopeUnavailable />;
   if (scope.kind === "environment" && connectedEnvironments.length === 0) {
     return (
-      <SettingsPageContainer>
-        <p className="text-sm text-muted-foreground">
-          Reconnect {scope.label} to change its settings.
-        </p>
-      </SettingsPageContainer>
+      <SettingsScopeStatus
+        message={`Reconnect ${scope.label} to change its settings.`}
+        action="reconnect"
+      />
     );
   }
   return children;
@@ -146,7 +185,31 @@ function SettingsContentLayout() {
 function SettingsRouteLayout() {
   const rawSearch = Route.useSearch();
   const navigate = Route.useNavigate();
+  const router = useRouter();
   const pathname = useLocation({ select: (location) => location.pathname });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes to router navigation, which React does not own
+  useEffect(
+    () =>
+      router.subscribe("onBeforeNavigate", ({ fromLocation, toLocation }) => {
+        if (
+          fromLocation?.pathname === toLocation.pathname &&
+          fromLocation.searchStr === toLocation.searchStr
+        )
+          return;
+        // History moves (back, forward, mod+[) unmount the page in a commit, which skips blur, so
+        // commit-on-blur fields would drop what was typed. Blurring first saves it; refocusing
+        // keeps focus recovery for the unmount.
+        const field = document.activeElement;
+        if (
+          (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) &&
+          field.closest('[data-workspace-area="settings"]')
+        ) {
+          field.blur();
+          field.focus({ preventScroll: true });
+        }
+      }),
+    [router],
+  );
   return (
     <SettingsScopeProvider
       search={rawSearch}
@@ -160,7 +223,8 @@ function SettingsRouteLayout() {
             machine: next.machine,
             checkout: next.checkout,
           }),
-          hash: "",
+          // A search result waiting for its scope stays pending until the new scope shows it.
+          hash: (previous = "") => (getSettingsSearchTargetScope(previous) ? previous : ""),
           resetScroll: false,
         });
       }}

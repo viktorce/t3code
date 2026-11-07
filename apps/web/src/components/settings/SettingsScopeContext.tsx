@@ -1,8 +1,9 @@
 import { type EnvironmentId, T3_PROJECT_FILE_NAME, type T3ProjectFile } from "@t3tools/contracts";
 import { parseT3ProjectFile } from "@t3tools/shared/t3ProjectFile";
 import { useAtomValue } from "@effect/atom-react";
+import { useLocation } from "@tanstack/react-router";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { createContext, type ReactNode, useContext } from "react";
+import { createContext, type ReactNode, useContext, useState } from "react";
 
 import { useEnvironments, usePrimaryEnvironmentId } from "../../state/environments";
 import { getProjectFileQueryAtom, optimisticFileAtom } from "../files/projectFilesQueryState";
@@ -87,6 +88,10 @@ const SettingsScopeContext = createContext<
       singleEnvironment: boolean;
       search: SettingsScopeSearch;
       selectScope: (next: SettingsScopeSearch) => void;
+      /** The project most recently open, so the project list can return focus to it. */
+      lastProject: string | undefined;
+      /** The last scope change closed a project, so the list should show the row just left. */
+      returnedFromProject: boolean;
     })
   | null
 >(null);
@@ -103,7 +108,36 @@ export function SettingsScopeProvider({
   children: ReactNode;
 }) {
   const resolved = useResolvedSettingsScope(search, singleEnvironment);
-  const value = { ...resolved, singleEnvironment, selectScope: onChange };
+  const pathname = useLocation({ select: (location) => location.pathname });
+  const hash = useLocation({ select: (location) => location.hash });
+  const [seen, setSeen] = useState({ search, pathname, hash });
+  const [lastProject, setLastProject] = useState(search.project);
+  const [returnedFromProject, setReturnedFromProject] = useState(false);
+  if (
+    seen.pathname !== pathname ||
+    seen.search.project !== search.project ||
+    seen.search.machine !== search.machine ||
+    seen.search.checkout !== search.checkout
+  ) {
+    setSeen({ search, pathname, hash });
+    // A search result that leaves a project, such as one dropping a missing project's key,
+    // brings a target of its own and starts fresh too.
+    setReturnedFromProject(
+      seen.pathname === pathname && seen.search.project !== undefined && !search.project && !hash,
+    );
+    if (search.project !== undefined) setLastProject(search.project);
+  } else if (seen.hash !== hash) {
+    // A new search target on the same page starts fresh instead of returning to the last project.
+    setSeen({ search, pathname, hash });
+    setReturnedFromProject(false);
+  }
+  const value = {
+    ...resolved,
+    singleEnvironment,
+    selectScope: onChange,
+    lastProject,
+    returnedFromProject,
+  };
   return <SettingsScopeContext value={value}>{children}</SettingsScopeContext>;
 }
 

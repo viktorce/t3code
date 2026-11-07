@@ -50,6 +50,7 @@ import {
 import { scrollToSettingsTarget } from "./settingsLayout";
 import {
   searchSettings,
+  settingsSearchTargetFollowsProject,
   revealSettingsSearchTarget,
   SETTINGS_NAV_GROUPS,
   SETTINGS_SECTION_LABELS,
@@ -57,8 +58,12 @@ import {
   type SettingsSearchItem,
 } from "./settingsSearch";
 import { useAvailableSettingsSearchItems } from "./useAvailableSettingsSearchItems";
+import { validateSettingsScopeSearch } from "./settingsScope";
+import { useOptionalSettingsScope } from "./SettingsScopeContext";
+import { useAllEnvironmentShellsBootstrapped } from "../../state/entities";
+import { projectListSearch } from "./settingsScopeNavigation";
 import { useSettingsSectionNavigation } from "./useSettingsSectionNavigation";
-import { workspaceAreaProps } from "../../lib/workspaceFocus";
+import { requestWorkspaceFocus, workspaceAreaProps } from "../../lib/workspaceFocus";
 
 const SnapShotIcon = createLucideIcon("snap-shot", [
   [
@@ -131,6 +136,15 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
   const navArea = workspaceAreaProps("settings-nav", 0, "Settings sections");
   const navigate = useNavigate();
   const currentHash = useLocation({ select: (location) => location.hash });
+  const currentSearch = useLocation({ select: (location) => location.search });
+  const scopeSearch = validateSettingsScopeSearch(currentSearch);
+  // Results for project settings name the project they open, as the palette's do.
+  const shownScope = useOptionalSettingsScope()?.scope;
+  const bootstrapped = useAllEnvironmentShellsBootstrapped();
+  const resultProjectName =
+    shownScope?.kind === "project" || shownScope?.kind === "checkout"
+      ? shownScope.group.displayName
+      : null;
   const activePath = SETTINGS_DETAIL_PAGE_PARENTS[pathname] ?? pathname;
   const navPaths = SETTINGS_NAV_GROUPS.flatMap((group) => group.paths);
   const sectionNavigation = useSettingsSectionNavigation(
@@ -195,11 +209,14 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
   }, [compactSearchOpen]);
 
   const handleSectionClick = (to: SettingsPath) => {
+    // The active Projects item leaves an open project for the list, like the header's arrow.
+    const toProjectList = to === "/settings/projects" && pathname === to && !!scopeSearch.project;
     void navigate({
       to,
       hash: "",
-      replace: true,
+      replace: !toProjectList,
       hashScrollIntoView: false,
+      ...(toProjectList ? { search: projectListSearch } : {}),
     });
   };
 
@@ -212,8 +229,19 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
     setCompactSearchOpen(false);
     const targetId = item.targetId ?? item.id;
     revealSettingsSearchTarget(targetId);
-    if (pathname === item.to && currentHash.replace(/^#/, "") === targetId) {
-      scrollToSettingsTarget(targetId);
+    // A missing project's key would keep its page, so a result that follows the project drops it
+    // and the project list offers one instead.
+    const dropMissingProject =
+      shownScope?.kind === "unavailable" &&
+      shownScope.reason === "project-missing" &&
+      // A project on an environment still loading is not gone yet.
+      bootstrapped &&
+      settingsSearchTargetFollowsProject(targetId);
+    if (!dropMissingProject && pathname === item.to && currentHash.replace(/^#/, "") === targetId) {
+      // A result still waiting for its scope has no target, so focus returns to the choices.
+      if (!scrollToSettingsTarget(targetId)) {
+        requestWorkspaceFocus({ area: "settings", restore: false });
+      }
       return;
     }
     void navigate({
@@ -222,6 +250,7 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
       replace: true,
       hashScrollIntoView: false,
       state: { settingsTargetHighlight: true },
+      ...(dropMissingProject ? { search: projectListSearch } : {}),
     });
   };
 
@@ -355,6 +384,10 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
                         </span>
                         <span className="block truncate text-2xs text-sidebar-muted-foreground/75">
                           {SETTINGS_SECTION_LABELS[item.to]}
+                          {resultProjectName &&
+                          settingsSearchTargetFollowsProject(item.targetId ?? item.id)
+                            ? ` · ${resultProjectName}`
+                            : null}
                         </span>
                       </span>
                     </SidebarMenuButton>

@@ -18,6 +18,7 @@ import {
   usePrimarySettingsAvailable,
 } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
+import { claimWorkspaceFocus } from "../../lib/workspaceFocus";
 import { WorkspacePageContainer, type WorkspacePageWidth } from "../WorkspacePageContainer";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -43,6 +44,8 @@ const EMPTY_MANAGED_PATHS: readonly string[] = [];
 declare module "@tanstack/react-router" {
   interface HistoryState {
     settingsTargetHighlight?: boolean;
+    /** The project list row that takes a removed project's place. */
+    settingsFocusProject?: string;
   }
 }
 
@@ -143,6 +146,8 @@ function scrollAndFocusSettingsTarget(target: HTMLElement, highlight = true): vo
     }
     target.addEventListener("blur", () => controller.abort(), { once: true, signal });
   }
+  // The hash is cleared once handled, so the palette cannot tell from the URL that focus moved.
+  claimWorkspaceFocus();
   target.focus({ preventScroll: true });
   target.classList.remove("settings-search-target-pulse");
   if (!highlight || prefersReducedMotion) return;
@@ -151,6 +156,13 @@ function scrollAndFocusSettingsTarget(target: HTMLElement, highlight = true): vo
   target.addEventListener("blur", () => target.classList.remove("settings-search-target-pulse"), {
     once: true,
   });
+  // Once the pulse ends, the focus outline marks the target again.
+  const endPulse = (event: AnimationEvent) => {
+    if (event.animationName !== "settings-search-target-pulse") return;
+    target.classList.remove("settings-search-target-pulse");
+    target.removeEventListener("animationend", endPulse);
+  };
+  target.addEventListener("animationend", endPulse);
 }
 
 export function useSettingsSearchTargetId(): string | null {
@@ -170,15 +182,28 @@ export function useSettingsSearchTarget<T extends HTMLElement>(id: string | unde
   return targetRef;
 }
 
+// Search targets keep a full-strength mark once their pulse ends. A section's card paints over
+// the section's inset outline, so a section rings its card, the part its pulse animates.
+// Forced colors drop rings; outline-hidden leaves the section a system outline there.
+const SEARCH_TARGET_FOCUS_CLASSNAME = "focus-visible:outline-2 focus-visible:outline-ring";
+const SEARCH_TARGET_SECTION_FOCUS_CLASSNAME =
+  "focus-visible:outline-hidden focus-visible:[&>[data-slot=settings-group]]:ring-2 focus-visible:[&>[data-slot=settings-group]]:ring-inset focus-visible:[&>[data-slot=settings-group]]:ring-ring";
+
 export function SettingsSearchTarget({
   children,
   // `searchableSetting` names the target for search; as an HTML title it shows a native tooltip.
   title: _searchTitle,
+  className,
   ...targetProps
 }: ComponentPropsWithoutRef<"div">) {
   const targetRef = useSettingsSearchTarget<HTMLDivElement>(targetProps.id);
   return (
-    <div {...targetProps} ref={targetRef} tabIndex={targetProps.id ? -1 : targetProps.tabIndex}>
+    <div
+      {...targetProps}
+      ref={targetRef}
+      tabIndex={targetProps.id ? -1 : targetProps.tabIndex}
+      className={cn(targetProps.id && SEARCH_TARGET_FOCUS_CLASSNAME, className)}
+    >
       {children}
     </div>
   );
@@ -230,7 +255,11 @@ export function SettingsSection({
       {...sectionProps}
       ref={targetRef}
       tabIndex={sectionProps.id ? -1 : sectionProps.tabIndex}
-      className={cn(!hideTitle && "space-y-2.5", className)}
+      className={cn(
+        !hideTitle && "space-y-2.5",
+        sectionProps.id && SEARCH_TARGET_SECTION_FOCUS_CLASSNAME,
+        className,
+      )}
     >
       {hideTitle ? (
         <h2 className="sr-only">{title}</h2>
@@ -497,6 +526,7 @@ export function SettingsRow({
       className={cn(
         "group/settings-row @container/settings-row rounded-xl px-3 sm:px-4 aria-disabled:opacity-64 aria-disabled:[&_*]:text-muted-foreground",
         children ? "pt-3 pb-1" : "py-3",
+        rowProps.id && SEARCH_TARGET_FOCUS_CLASSNAME,
         className,
       )}
     >

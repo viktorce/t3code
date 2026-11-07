@@ -123,3 +123,18 @@ const PROJECT_ICON_COLOR_CLASSES = Object.fromEntries(
 export function projectIconColorClassName(color: ProjectIconColor): string {
   return PROJECT_ICON_COLOR_CLASSES[color];
 }
+
+/**
+ * The icon picker's name for an icon: "globe-2" reads "Globe 2". The number stays, because the
+ * picker searches all of Lucide, where it tells drawings apart ("Dice 1" to "Dice 6").
+ */
+export function projectIconNameLabel(name: string): string {
+  return name
+    .split("-")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+export function projectIconColorLabel(color: ProjectIconColor): string {
+  return PROJECT_ICON_COLORS.find((option) => option.value === color)?.label ?? color;
+}
