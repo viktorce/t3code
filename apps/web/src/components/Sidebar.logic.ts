@@ -822,6 +822,7 @@ export type SidebarThreadStatus =
   | "waiting"
   | "failed"
   | "limited"
+  | "unreachable"
   | "ready";
 
 export function shouldRecedeSidebarThread(input: {
@@ -885,7 +886,11 @@ export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): Si
     return "waiting";
   }
   if (thread.runtime?.status === "failed") {
-    return thread.runtime.lastErrorClass === "usage_limit" ? "limited" : "failed";
+    return thread.runtime.lastErrorClass === "usage_limit"
+      ? "limited"
+      : thread.runtime.lastErrorClass === "transport_error"
+        ? "unreachable"
+        : "failed";
   }
   return "ready";
 }
@@ -902,7 +907,8 @@ export function resolveSidebarFolderDot(
     statuses.has("input") ||
     statuses.has("approval") ||
     statuses.has("request") ||
-    statuses.has("limited")
+    statuses.has("limited") ||
+    statuses.has("unreachable")
   ) {
     return "attention";
   }

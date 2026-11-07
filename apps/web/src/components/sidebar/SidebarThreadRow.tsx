@@ -51,6 +51,8 @@ import {
   Undo2Icon,
   UserRoundIcon,
   XIcon,
+  CirclePauseIcon,
+  CloudOffIcon,
 } from "lucide-react";
 import {
   memo,
@@ -74,6 +76,7 @@ import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 import { formatRelativeTimeLabel, parseTimestampDate } from "../../timestampFormat";
 import type { SidebarThreadSummary } from "../../types";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
+import { useConnectionMock } from "../../mockups/connectionMock";
 import { cn } from "~/lib/utils";
 import { textDirection } from "~/textDirection";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
@@ -349,14 +352,19 @@ function SidebarThreadTooltip({
           <div
             className={cn(
               "flex min-w-0 items-center gap-2",
-              thread.runtime.lastErrorClass === "usage_limit" ? "text-warning" : "text-error",
+              thread.runtime.lastErrorClass === "usage_limit" ||
+                thread.runtime.lastErrorClass === "transport_error"
+                ? "text-warning"
+                : "text-error",
             )}
           >
             <CircleAlertIcon className="size-3 shrink-0 stroke-current" />
             <div className="min-w-0 truncate">
               {thread.runtime.lastErrorClass === "usage_limit"
                 ? "Usage limit reached"
-                : "Error occurred"}
+                : thread.runtime.lastErrorClass === "transport_error"
+                  ? "MacBook Pro can't reach Anthropic"
+                  : "Error occurred"}
             </div>
           </div>
         ) : null}
@@ -522,6 +530,8 @@ const TOP_STATUS_ICONS = {
   request: UserRoundIcon,
   approval: ShieldQuestionIcon,
   failed: CircleAlertIcon,
+  unreachable: CloudOffIcon,
+  stopped: CirclePauseIcon,
   done: CircleCheckIcon,
   woke: AlarmClockIcon,
 } as const;
@@ -706,7 +716,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     : null;
 
   const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
-  const status = resolveSidebarThreadStatus(thread);
+  const connectionMock = useConnectionMock();
+  const realStatus = resolveSidebarThreadStatus(thread);
+  const connectionStopped = realStatus === "unreachable";
+  const status = connectionStopped && connectionMock.resumed[thread.id] ? "working" : realStatus;
+  const connectionScheduled = connectionStopped && connectionMock.autoResume[thread.id] === true;
   const lastVisitedDate = lastVisitedAt === undefined ? null : parseTimestampDate(lastVisitedAt);
   const wokeAtDate = props.wokeAt === null ? null : parseTimestampDate(props.wokeAt);
   const isWoke =
@@ -714,7 +728,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     (lastVisitedDate === null || lastVisitedDate < wokeAtDate) &&
     thread.settledOverride !== "settled";
   const shouldRecede = shouldRecedeSidebarThread({
-    status,
+    status: connectionScheduled ? "waiting" : status,
     isUnread,
     isWoke,
     isActive: props.isActive,
@@ -762,25 +776,43 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                     icon: "failed" as const,
                     className: "text-warning-foreground",
                   }
-                : status === "failed"
-                  ? {
-                      label: "Failed",
-                      icon: "failed" as const,
-                      className: "text-error-foreground",
-                    }
-                  : isWoke
+                : status === "unreachable"
+                  ? connectionScheduled
                     ? {
-                        label: "Woke",
-                        icon: "woke" as const,
-                        className: "text-warning-foreground",
+                        label: "Auto-resume",
+                        icon: "unreachable" as const,
+                        className: "text-muted-foreground",
                       }
-                    : isUnread
+                    : connectionMock.reachable
                       ? {
-                          label: "Done",
-                          icon: "done" as const,
-                          className: "text-success-foreground",
+                          label: "Stopped",
+                          icon: "stopped" as const,
+                          className: "text-warning-foreground",
                         }
-                      : null;
+                      : {
+                          label: "Unreachable",
+                          icon: "unreachable" as const,
+                          className: "text-warning-foreground",
+                        }
+                  : status === "failed"
+                    ? {
+                        label: "Failed",
+                        icon: "failed" as const,
+                        className: "text-error-foreground",
+                      }
+                    : isWoke
+                      ? {
+                          label: "Woke",
+                          icon: "woke" as const,
+                          className: "text-warning-foreground",
+                        }
+                      : isUnread
+                        ? {
+                            label: "Done",
+                            icon: "done" as const,
+                            className: "text-success-foreground",
+                          }
+                        : null;
   const isWokeStatus = topStatus?.icon === "woke";
 
   const branchMismatch = resolveLocalCheckoutBranchMismatch({

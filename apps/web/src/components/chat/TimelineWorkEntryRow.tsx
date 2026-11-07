@@ -207,7 +207,8 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
       : undefined;
   if (pendingApproval) return <TimelinePendingApprovalRow approval={pendingApproval} />;
   if (failureItem?.type === "error" && failureItem.status === "failed") {
-    const warning = failureItem.failure.class === "usage_limit";
+    const transport = failureItem.failure.class === "transport_error";
+    const warning = failureItem.failure.class === "usage_limit" || transport;
     const resetAt = failureItem.failure.resetAt;
     // The reset time is the viewer's local time; naming the zone keeps it
     // unambiguous. Both read the zone now, since the device's can change.
@@ -215,9 +216,11 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
     const resetTime = resetAt
       ? `${formatUpcomingTimestamp(resetAt, timestampFormat, undefined, timeZone)} (${timeZone})`
       : null;
-    const label = warning
-      ? `Usage limit reached.${resetTime ? ` Retry after ${resetTime}.` : ""}`
-      : workEntry.label;
+    const label = transport
+      ? workEntry.label
+      : warning
+        ? `Usage limit reached.${resetTime ? ` Retry after ${resetTime}.` : ""}`
+        : workEntry.label;
     const retryRunId =
       failureItem.runId !== null &&
       retryableWorkspacePreparationRunIds.has(failureItem.runId) &&
@@ -249,8 +252,13 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
           />
         }
       >
-        {!warning ? (
-          <p className="ms-7 whitespace-pre-wrap break-words py-1 text-sm leading-relaxed text-foreground/80">
+        {!warning || transport ? (
+          <p
+            className={cn(
+              "ms-7 whitespace-pre-wrap break-words py-1 text-sm leading-relaxed text-foreground/80",
+              transport && "font-mono text-xs text-muted-foreground",
+            )}
+          >
             {failureItem.failure.message}
           </p>
         ) : null}

@@ -292,9 +292,11 @@ export function deriveResumableRunId(
 ): RunId | null {
   const run = latestExecutedRun(projection.runs);
   if (run?.status === "interrupted") return run.id;
+  const resumableClass = (failureClass: string | undefined) =>
+    failureClass === "usage_limit" || failureClass === "transport_error";
   return run?.status === "failed" &&
-    runtime?.lastErrorClass === "usage_limit" &&
-    latestRootProviderFailure(run, projection.turnItems)?.class === "usage_limit"
+    resumableClass(runtime?.lastErrorClass ?? undefined) &&
+    resumableClass(latestRootProviderFailure(run, projection.turnItems)?.class)
     ? run.id
     : null;
 }

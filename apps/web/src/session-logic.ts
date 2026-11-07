@@ -369,7 +369,9 @@ export function providerErrorPresentation(
       label:
         item.failure.class === "usage_limit"
           ? "Usage limit reached"
-          : item.title?.trim() || "Provider error",
+          : item.failure.class === "transport_error"
+            ? "MacBook Pro couldn't reach Anthropic"
+            : item.title?.trim() || "Provider error",
       detail: item.failure.message,
     };
   }

@@ -33,6 +33,9 @@ import { ThreadFind, ThreadFindCanvas } from "./chat/ThreadFindProvider";
 import { closeThreadFind, openThreadFind, useThreadFindOpen } from "./chat/threadFindStore";
 import { THREAD_FIND_BAR_RESERVED_HEIGHT } from "./chat/ThreadFindBar";
 import { usageLimitRecoveryBannerItem } from "./chat/UsageLimitRecoveryBanner";
+import { connectionRecoveryBannerItem } from "./chat/ConnectionRecoveryBanner";
+import { setConnectionMock, useConnectionMock } from "../mockups/connectionMock";
+import { useVisibleThreadShells as useMockVisibleThreadShells } from "../state/entities";
 import { resolveDraftHeroState } from "./ChatView.logic";
 import { useQueuedRunEdit } from "./chat/useQueuedRunEdit";
 import { recallCheckoutIsRepo, rememberCheckoutIsRepo } from "./ChatView.logic";
@@ -996,8 +999,25 @@ export default function ChatView(props: ChatViewProps) {
     recovery: activeThreadShell?.limitRecovery,
     snoozedUntil: activeThreadShell?.snoozedUntil,
   });
+  const connectionMock = useConnectionMock();
+  const connectionRecoveryRun =
+    serverRuntime?.status === "failed" && serverRuntime.lastErrorClass === "transport_error"
+      ? (activeThreadShell?.latestRun ?? null)
+      : null;
+  const connectionAffectedIds = useMockVisibleThreadShells()
+    .filter(
+      (shell) =>
+        shell.runtime?.status === "failed" &&
+        shell.runtime.lastErrorClass === "transport_error" &&
+        shell.environmentId === activeThreadShell?.environmentId &&
+        shell.runtime.providerInstanceId === serverRuntime?.providerInstanceId &&
+        shell.settledOverride !== "settled" &&
+        !connectionMock.resumed[shell.id],
+    )
+    .map((shell) => shell.id);
   const timelineThreadError =
-    limitRecoveryRun !== null && visibleThreadError === serverRuntime?.lastError
+    (limitRecoveryRun !== null || connectionRecoveryRun !== null) &&
+    visibleThreadError === serverRuntime?.lastError
       ? null
       : visibleThreadError;
 
@@ -2573,6 +2593,49 @@ export default function ChatView(props: ChatViewProps) {
           },
         })
       : null;
+  const connectionStoppedIds = connectionAffectedIds;
+  const connectionScheduledCount = connectionStoppedIds.filter(
+    (id) => connectionMock.autoResume[id],
+  ).length;
+  const mockLatency = () => new Promise((resolve) => setTimeout(resolve, 450));
+  const connectionRecoveryBanner =
+    connectionRecoveryRun !== null &&
+    activeThreadShell !== null &&
+    !connectionMock.resumed[activeThreadShell.id]
+      ? connectionRecoveryBannerItem({
+          runId: connectionRecoveryRun.runId,
+          machineName: "MacBook Pro",
+          providerName: "Anthropic",
+          stoppedAt: connectionRecoveryRun.completedAt ?? activeThreadShell.updatedAt,
+          reachable:
+            connectionMock.reachable && connectionMock.autoResume[activeThreadShell.id] !== true,
+          scheduled: connectionMock.autoResume[activeThreadShell.id] === true,
+          stoppedCount: connectionStoppedIds.length,
+          scheduledCount: connectionScheduledCount,
+          timestampFormat,
+          onAutoResumeChange: async (scope, autoResume) => {
+            await mockLatency();
+            setConnectionMock((current) => {
+              const next: Record<string, true> = { ...current.autoResume };
+              for (const id of scope === "all" ? connectionStoppedIds : [activeThreadShell.id]) {
+                if (autoResume) next[id] = true;
+                else delete next[id];
+              }
+              return { ...current, autoResume: next };
+            });
+          },
+          onResumeNow: async (scope) => {
+            await mockLatency();
+            setConnectionMock((current) => {
+              const resumed: Record<string, true> = { ...current.resumed };
+              for (const id of scope === "all" ? connectionStoppedIds : [activeThreadShell.id]) {
+                resumed[id] = true;
+              }
+              return { ...current, resumed };
+            });
+          },
+        })
+      : null;
   const composerBannerItems = (() => {
     const fallbackSelection = draftFallback?.selection;
     const defaultSelection =
@@ -2619,7 +2682,10 @@ export default function ChatView(props: ChatViewProps) {
             }),
           ]
         : [];
-    const limitRecoveryItems = limitRecoveryBanner === null ? [] : [limitRecoveryBanner];
+    const limitRecoveryItems = [
+      ...(limitRecoveryBanner === null ? [] : [limitRecoveryBanner]),
+      ...(connectionRecoveryBanner === null ? [] : [connectionRecoveryBanner]),
+    ];
     const extensionStatusBanner = extensionStatusBannerItem(
       deriveProviderExtensionStatuses(serverProjection),
     );

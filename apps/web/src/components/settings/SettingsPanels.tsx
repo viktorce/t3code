@@ -78,6 +78,7 @@ import { DraftInput } from "../ui/draft-input";
 import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
+import { setConnectionMock, useConnectionMock } from "../../mockups/connectionMock";
 import { ScopedSwitch } from "./ScopedSwitch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -1498,6 +1499,7 @@ function ScopedCompactIdleThreadsRow() {
 }
 
 export function ThreadsSettingsPanel() {
+  const connectionMock = useConnectionMock();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   const navigate = useNavigate();
@@ -1653,6 +1655,26 @@ export function ThreadsSettingsPanel() {
                 updateSettings({ snoozeLimitedThreads: Boolean(checked) })
               }
               aria-label="Snooze until limits reset"
+            />
+          }
+        />
+      </SettingsSection>
+
+      <SettingsSection id="connection-errors" title="Connection errors">
+        <SettingsRow
+          serverScoped
+          {...searchableSetting("auto-resume-connection-errors")}
+          description="Automatically resume threads that stopped on a connection error once their machine can reach the provider again. You can cancel auto-resume in each thread."
+          control={
+            <Switch
+              checked={connectionMock.autoResumeSetting}
+              onCheckedChange={(checked) =>
+                setConnectionMock((current) => ({
+                  ...current,
+                  autoResumeSetting: Boolean(checked),
+                }))
+              }
+              aria-label="Resume after connection errors"
             />
           }
         />
