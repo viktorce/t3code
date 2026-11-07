@@ -161,6 +161,26 @@ describe("workspace area focus", () => {
     expect(list.scrollTop).toBeGreaterThan(0);
   });
 
+  it("brings a requested control back into view inside its scroller", () => {
+    using fixture = setup();
+    const settings = fixture.area("settings", 1);
+    const page = document.createElement("div");
+    page.style.cssText = "height: 50px; overflow-y: auto";
+    const picker = document.createElement("button");
+    picker.id = "scope-picker";
+    picker.textContent = "Project scope";
+    const spacer = document.createElement("div");
+    spacer.style.height = "400px";
+    page.append(picker, spacer);
+    settings.element.append(page);
+    page.scrollTop = 300;
+    expect(fixture.controller.focus("settings", true, "#scope-picker")).toBe(true);
+    expect(document.activeElement).toBe(picker);
+    const box = page.getBoundingClientRect();
+    const rect = picker.getBoundingClientRect();
+    expect(rect.top >= box.top && rect.bottom <= box.bottom).toBe(true);
+  });
+
   it("reveals a restored control through nested scrolling lists", () => {
     using fixture = setup();
     const settings = fixture.area("settings", 1);
@@ -215,6 +235,16 @@ describe("workspace area focus", () => {
     tab.focus();
     tab.remove();
     await vi.waitFor(() => expect(document.activeElement).toBe(panel.button));
+
+    // A container that names a fallback keeps its controls' focus instead.
+    const checkouts = fixture.append(
+      '<section id="checkouts" tabindex="-1" data-workspace-focus-fallback="checkouts">Checkouts<button>Remove</button></section>',
+    );
+    panel.element.append(checkouts);
+    const remove = checkouts.querySelector("button")!;
+    remove.focus();
+    remove.remove();
+    await vi.waitFor(() => expect(document.activeElement).toBe(checkouts));
   });
 
   it("falls back to the main content when the whole area disappears", async () => {

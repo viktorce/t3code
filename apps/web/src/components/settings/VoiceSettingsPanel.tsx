@@ -421,7 +421,11 @@ function ProjectDictionaryRow() {
   const words = useScopedSettings((settings) => settings.speechProjectCustomWords);
   const updateScopedSettings = useUpdateScopedSettings();
   if (scope === null) return null;
-  const isProjectScope = scope.scope.kind === "project" || scope.scope.kind === "checkout";
+  const projectName =
+    scope.scope.kind === "project" || scope.scope.kind === "checkout"
+      ? scope.scope.group.displayName
+      : null;
+  const isProjectScope = projectName !== null;
   return (
     <SettingsRow
       serverScoped
@@ -430,7 +434,7 @@ function ProjectDictionaryRow() {
       title={isProjectScope ? "Project dictionary" : "Shared dictionary"}
       description={
         isProjectScope
-          ? `Saved with ${scope.scope.label} on its environment. Everyone who dictates in this project gets these spellings, along with their own dictionary. Project spellings win when the two overlap.`
+          ? `Saved with ${projectName} on its environment. Everyone who dictates in this project gets these spellings, along with their own dictionary. Project spellings win when the two overlap.`
           : "Saved on the environment and used in every project there, along with each person’s own dictionary. Pick a project above to limit these words to one project."
       }
       control={

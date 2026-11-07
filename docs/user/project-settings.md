@@ -1,9 +1,11 @@
 # Settings and project overrides
 
-On web and desktop, the "Applying settings for …" sentence at the top of Settings pages picks
-the project and environment a change applies to. Pages that only hold device preferences, such as
-Appearance, don't show it. They start at **All projects** and **All environments**
-and stay selected as you move between categories or search for a setting.
+On web and desktop, the "Settings for …" sentence at the top of Settings pages picks
+the project and environment a change applies to. On the **Projects** list it reads "Showing …":
+choose an environment to filter the list, or a project to open its page. Pages that only hold
+device preferences, such as Appearance, don't show it. Both pickers start at **All projects** and **All environments**
+and keep their choice as you move between categories or search for a setting. With only one
+environment, the sentence names just the project.
 
 Preferences saved on this device, such as appearance, confirmations and browser profiles, always
 show and ignore the selection. Everything else is stored on a server. Choose one environment to
@@ -171,13 +173,15 @@ than** on the task.
 
 ## Defaults and inheritance
 
-Threads contains the model and workspace for new threads. Browser controls agent browser
-access. Source control contains automatic pull, the default pull request merge method and text
-generation. The same rows edit environment defaults or project overrides depending on the
-project crumb.
+Threads contains the model and workspace for new threads. Voice holds the project dictionary, and
+Providers turns each provider on or off. Browser and Devices control agent access. Source control
+contains automatic pull, the default pull request merge method and text generation. Worktrees holds
+creation, branch naming and cleanup, and Maintenance holds whether threads continue after restarts.
+The same rows edit environment defaults or project overrides depending on the project chosen in the
+"Settings for …" sentence. A project's page links to each of these pages.
 
-The Projects category, under Code, holds the project's name, icon, actions,
-checkouts and removal. Actions belong to a project: editing them creates the project's own list
+The Projects category, under Code, holds the project's name, icon, pin and archive, new-thread
+model and workspace, actions, checkouts and removal. Actions belong to a project: editing them creates the project's own list
 on each selected environment, and reset returns to the environment's shared list. A project's
 `t3.json` actions can be imported there.
 
@@ -239,9 +243,9 @@ working. Current logs, message attachments, and browser profiles are kept.
 
 ## Project icons
 
-Select the project and open Project to choose an icon, emoji, monogram, or image. The choice applies to
-every checkout in the project group and appears on connected clients. Choose **Automatic** to let
-T3 Code detect an icon again.
+In **Settings → Projects**, choose the project, then **Choose icon** or **Choose file** to pick an
+icon, emoji, monogram, or image. The choice applies to the project's checkouts on the selected
+environments and appears on connected clients. Reset **Icon** to let T3 Code detect an icon again.
 
 Choose **Monogram** in the icon picker to set one or two letters or numbers and a color.
 

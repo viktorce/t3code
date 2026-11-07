@@ -97,6 +97,7 @@ import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl"
 import { copyThreadReference } from "../lib/copyThreadReference";
 import {
   queueWorkspaceFocusFromPalette,
+  requestWorkspaceFocus,
   restoreWorkspaceFocusFromPalette,
 } from "../lib/workspaceFocus";
 import {
@@ -135,6 +136,7 @@ import {
   useHiddenThreadKeys,
   useEnvironmentThreadRefs,
   useProjects,
+  useAllEnvironmentShellsBootstrapped,
   useServerConfigs,
   useVisibleThreadShells,
   waitForProject,
@@ -171,6 +173,8 @@ import {
   newProjectId,
 } from "../lib/utils";
 import { buildThreadRouteParams } from "../threadRoutes";
+import { validateSettingsScopeSearch } from "./settings/settingsScope";
+import { projectListSearch } from "./settings/settingsScopeNavigation";
 import { useAvailableSettingsSearchItems } from "./settings/useAvailableSettingsSearchItems";
 import {
   applyWslEnvironmentConfiguration,
@@ -248,7 +252,13 @@ import { openLinkPullRequestDialog } from "./pullRequest/LinkPullRequestDialog";
 import { canShareWithGuestAtom } from "./chat/guestShareAvailability";
 import { openGuestShareDialog } from "./chat/guestShareDialogState";
 import { ProjectContentSearchDialog } from "./search/ProjectContentSearchDialog";
-import { settingsForThisPlatform, SETTINGS_SECTION_LABELS } from "./settings/settingsSearch";
+import { scrollToSettingsTarget } from "./settings/settingsLayout";
+import {
+  revealSettingsSearchTarget,
+  settingsForThisPlatform,
+  settingsSearchTargetFollowsProject,
+  SETTINGS_SECTION_LABELS,
+} from "./settings/settingsSearch";
 import { primaryServerKeybindingsAtom } from "../state/server";
 import { resolveShortcutCommand, threadJumpIndexFromCommand } from "../keybindings";
 import { CommandDialog, CommandDialogPopup, CommandFooterAction } from "./ui/command";
@@ -400,6 +410,14 @@ function OpenCommandPaletteDialog(props: {
 }) {
   const navigate = useNavigate();
   const pathname = useLocation({ select: (location) => location.pathname });
+  const currentHash = useLocation({ select: (location) => location.hash });
+  const shellsBootstrapped = useAllEnvironmentShellsBootstrapped();
+  const settingsProjectKey = useLocation({
+    select: (location) =>
+      location.pathname.startsWith("/settings")
+        ? validateSettingsScopeSearch(location.search).project
+        : undefined,
+  });
   const { openChildSearch, setOpen } = props;
   // Keyed by palette session: the intent and restored search only seed this
   // mount, and closing must not change what the closing palette shows.
@@ -594,8 +612,18 @@ function OpenCommandPaletteDialog(props: {
 
     return options;
   })();
+  // "Add project" opened for one environment offers only that one, while it can take a project.
+  const requestedAddProjectEnvironmentId =
+    props.openIntent?.kind === "add-project" ? props.openIntent.environmentId : undefined;
+  const requestedAddProjectEnvironment = environments.find(
+    (environment) => environment.environmentId === requestedAddProjectEnvironmentId,
+  );
   const defaultAddProjectEnvironmentId =
-    addProjectEnvironmentOptions.find((option) => option.isConnected)?.environmentId ?? null;
+    addProjectEnvironmentOptions.find((option) =>
+      requestedAddProjectEnvironmentId === undefined
+        ? option.isConnected
+        : option.environmentId === requestedAddProjectEnvironmentId,
+    )?.environmentId ?? null;
   const wslAddProjectEnvironmentOption =
     addProjectEnvironmentOptions.find((option) => {
       if (!option.isConnected) {
@@ -1187,6 +1215,7 @@ function OpenCommandPaletteDialog(props: {
   const addProjectEntry = resolveAddProjectEntry(
     addProjectEnvironmentOptions,
     defaultAddProjectEnvironmentId,
+    requestedAddProjectEnvironmentId,
   );
 
   const openAddProjectFlow = () => {
@@ -1221,7 +1250,15 @@ function OpenCommandPaletteDialog(props: {
                 value: "action:add-project:connect-environment",
                 searchTerms: ["connect", "environment", "connection", "settings"],
                 title: "Connect an environment",
-                description: "No connected environment can add a project",
+                description: requestedAddProjectEnvironment
+                  ? `${resolveEnvironmentOptionLabel({
+                      isPrimary:
+                        requestedAddProjectEnvironment.entry.target._tag ===
+                        "PrimaryConnectionTarget",
+                      environmentId: requestedAddProjectEnvironment.environmentId,
+                      runtimeLabel: requestedAddProjectEnvironment.label,
+                    })} is not connected`
+                  : "No connected environment can add a project",
                 icon: <SettingsIcon className={ITEM_ICON_CLASS} />,
                 keepOpen: true,
                 run: async () => {
@@ -1634,17 +1671,36 @@ function OpenCommandPaletteDialog(props: {
   });
 
   // Every group, so an archived project's thread still opens its own settings.
-  const currentProjectGroup =
-    (contextualProjectRef
+  const groupOf = (projectRef: ReturnType<typeof resolveThreadActionProjectRef>) =>
+    (projectRef
       ? projectGroups.find((group) =>
           group.memberProjectRefs.some(
             (ref) =>
-              ref.environmentId === contextualProjectRef.environmentId &&
-              ref.projectId === contextualProjectRef.projectId,
+              ref.environmentId === projectRef.environmentId &&
+              ref.projectId === projectRef.projectId,
           ),
         )
       : null) ?? null;
-  if (currentProjectGroup && canPinProjectGroup(currentProjectGroup)) {
+  const inSettings = pathname.startsWith("/settings");
+  // Project commands act on the project in view: the page's inside Settings, else the thread's
+  // or draft's. Never the fallback project a new thread would use.
+  const currentProjectGroup = inSettings
+    ? (projectGroups.find((group) => group.projectKey === settingsProjectKey) ?? null)
+    : groupOf(
+        resolveThreadActionProjectRef({
+          activeDraftThread,
+          activeThread: activeThread ?? undefined,
+          defaultProjectRef: null,
+          handleNewThread,
+        }),
+      );
+  // A missing project's key in Settings, which results that follow the project drop. A project on
+  // an environment still loading is not gone yet, so its key stays.
+  const missingProject =
+    inSettings && settingsProjectKey !== undefined && !currentProjectGroup && shellsBootstrapped;
+  const canPinCurrentProject =
+    currentProjectGroup !== null && canPinProjectGroup(currentProjectGroup);
+  if (currentProjectGroup && canPinCurrentProject) {
     actionItems.push({
       kind: "action",
       value: "action:project-pin",
@@ -1659,58 +1715,105 @@ function OpenCommandPaletteDialog(props: {
       run: async () => toggleProjectGroupPin(currentProjectGroup),
     });
   }
-  const contextualProjectGroup = currentProjectGroup ?? projectGroups[0] ?? null;
-  if (contextualProjectGroup) {
-    actionItems.push({
-      kind: "action",
-      value: "action:project-settings",
-      searchTerms: [
-        "project",
-        "settings",
-        "name",
-        "icon",
-        "scripts",
-        "model",
-        "workspace",
-        "grouping",
-        "checkout",
-        "remove",
-        "t3.json",
-      ],
-      title: "Project settings",
-      description: contextualProjectGroup.displayName,
-      icon: <FolderIcon className={ITEM_ICON_CLASS} />,
-      run: async () => {
+  actionItems.push({
+    kind: "action",
+    value: "action:project-settings",
+    searchTerms: [
+      "project",
+      "settings",
+      "name",
+      "icon",
+      "scripts",
+      "model",
+      "workspace",
+      "grouping",
+      "checkout",
+      "remove",
+      "t3.json",
+    ],
+    title: "Project settings",
+    ...(currentProjectGroup ? { description: currentProjectGroup.displayName } : {}),
+    icon: <FolderIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      // With no project in view this opens the project list. Inside Settings,
+      // retainSettingsScope keeps the shown project and its filters.
+      if (inSettings || !currentProjectGroup) {
+        // A missing project's stale key would reopen its page, so it is dropped for the list.
         await navigate({
-          to: "/projects/$projectKey",
-          params: { projectKey: contextualProjectGroup.projectKey },
+          to: "/settings/projects",
+          ...(missingProject ? { search: projectListSearch } : {}),
         });
-      },
-    });
-  }
+        // The control the palette opened from may be gone, so the page's own target takes focus.
+        requestWorkspaceFocus({ area: "settings", restore: false });
+        return;
+      }
+      await navigate({
+        to: "/projects/$projectKey",
+        params: { projectKey: currentProjectGroup.projectKey },
+      });
+    },
+  });
 
   const rootGroups = buildRootGroups({ actionItems, recentThreadItems });
   // Every setting goes to the palette's own matcher, so settings get the same
   // word starts and typo tolerance as threads.
   const settingsSearchItems: CommandPaletteActionItem[] = settingsForThisPlatform(
     availableSettingsSearchItems,
-  ).map((item) => ({
-    kind: "action",
-    value: `setting:${item.id}`,
-    searchTerms: [item.title, SETTINGS_SECTION_LABELS[item.to], ...(item.searchTerms ?? [])],
-    title: item.title,
-    description: `Settings · ${SETTINGS_SECTION_LABELS[item.to]}`,
-    ...(item.secondary ? { secondary: true } : {}),
-    icon: <SettingsIcon className={ITEM_ICON_CLASS} />,
-    run: async () => {
-      await navigate({
-        to: item.to,
-        hash: item.targetId ?? item.id,
-        replace: pathname === item.to,
-        hashScrollIntoView: false,
-      });
-    },
-  }));
+  )
+    // The pin action already toggles the shown project; its setting stays for projects that can't.
+    .filter((item) => item.id !== "project-pin" || !canPinCurrentProject)
+    .map((item) => {
+      const targetId = item.targetId ?? item.id;
+      // A result that follows the project in view names it. Without one, a project setting opens
+      // the project list.
+      const projectTarget = settingsSearchTargetFollowsProject(targetId);
+      const projectGroup = projectTarget ? currentProjectGroup : null;
+      return {
+        kind: "action",
+        value: `setting:${item.id}`,
+        searchTerms: [item.title, SETTINGS_SECTION_LABELS[item.to], ...(item.searchTerms ?? [])],
+        title: item.title,
+        description: `Settings · ${SETTINGS_SECTION_LABELS[item.to]}${
+          projectGroup ? ` · ${projectGroup.displayName}` : ""
+        }`,
+        ...(item.secondary ? { secondary: true } : {}),
+        icon: <SettingsIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          // The same result again changes no URL, so it takes focus here, as settings search does:
+          // its target, or the choices of a result still waiting for its scope.
+          if (
+            !(projectTarget && missingProject) &&
+            pathname === item.to &&
+            currentHash.replace(/^#/, "") === targetId
+          ) {
+            revealSettingsSearchTarget(targetId);
+            if (!scrollToSettingsTarget(targetId)) {
+              requestWorkspaceFocus({ area: "settings", restore: false });
+            }
+            return;
+          }
+          // Inside Settings, retainSettingsScope already keeps the page's project. A missing
+          // project's key is dropped so the result opens unscoped, as its description says.
+          await navigate({
+            to: item.to,
+            ...(!projectTarget || (inSettings && !missingProject)
+              ? {}
+              : projectGroup
+                ? {
+                    search: {
+                      project: projectGroup.projectKey,
+                      machine: undefined,
+                      checkout: undefined,
+                    },
+                  }
+                : { search: projectListSearch }),
+            hash: targetId,
+            replace: pathname === item.to,
+            hashScrollIntoView: false,
+          });
+        },
+      };
+    });
   const sourceSelectionViewValue =
     addProjectEnvironmentId === null ? null : `sources:${addProjectEnvironmentId}`;
   const activeGroups =

@@ -17,6 +17,13 @@ const SCOPE_KEYS = [
 ] as const satisfies readonly (keyof SettingsScopeSearch)[];
 const TARGET_INPUT_KEYS = [...SCOPE_KEYS, "environmentId"];
 
+// Every axis is sent so retainSettingsScope does not carry the open project over.
+export const projectListSearch = ({ machine }: SettingsScopeSearch): SettingsScopeSearch => ({
+  project: undefined,
+  machine,
+  checkout: undefined,
+});
+
 export const retainSettingsScope: SearchMiddleware<SettingsScopeSearch> = ({ search, next }) => {
   const result = next(search);
   if (TARGET_INPUT_KEYS.some((key) => Object.hasOwn(result, key))) return result;

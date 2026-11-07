@@ -132,6 +132,15 @@ describe("resolveAddProjectEntry", () => {
       environmentId: local,
     });
   });
+
+  it("keeps a requested environment, asking to connect it rather than using another", () => {
+    expect(
+      resolveAddProjectEntry([{ environmentId: local }, { environmentId: remote }], remote, remote),
+    ).toEqual({ kind: "choose-source", environmentId: remote });
+    expect(resolveAddProjectEntry([{ environmentId: local }], null, remote)).toEqual({
+      kind: "connect-environment",
+    });
+  });
 });
 
 const LOCAL_ENVIRONMENT_ID = EnvironmentId.make("environment-local");

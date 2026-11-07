@@ -83,7 +83,11 @@ export function resolveSettingsScope(
 
   if (search.project) {
     const group = groups.find((candidate) => candidate.projectKey === search.project);
-    if (!group) return unavailable("project-missing", "This project is no longer available.");
+    if (!group)
+      return unavailable(
+        "project-missing",
+        "This project was removed, or the link to it is out of date.",
+      );
     const members = group.memberProjects.filter(
       (member) =>
         (search.machine === undefined || member.environmentId === search.machine) &&

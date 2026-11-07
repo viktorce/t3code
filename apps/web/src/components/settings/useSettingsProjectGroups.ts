@@ -20,5 +20,11 @@ export function useSettingsProjectGroups() {
     settings: { sidebarProjectGroupingMode, sidebarProjectGroupingOverrides },
     primaryEnvironmentId,
     resolveEnvironmentLabel: (id) => labels.get(id) ?? null,
-  }).sort((a, b) => a.displayName.localeCompare(b.displayName));
+  }).sort(
+    (a, b) =>
+      Number(a.isScratch ?? false) - Number(b.isScratch ?? false) ||
+      Number(a.archived) - Number(b.archived) ||
+      Number(b.pinned) - Number(a.pinned) ||
+      a.displayName.localeCompare(b.displayName),
+  );
 }

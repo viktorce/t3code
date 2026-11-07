@@ -930,16 +930,14 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     }
   }
 
+  /* A section pulses its card, the part its focus ring marks, not its heading. */
   [data-settings-page-scroll] div.settings-search-target-pulse,
-  [data-settings-page-scroll] section.settings-search-target-pulse > div:first-child {
+  [data-settings-page-scroll] section.settings-search-target-pulse > [data-slot="settings-group"],
+  [data-settings-page-scroll]
+    section.settings-search-target-pulse
+    > div:first-child:not([data-settings-scroll-target]) {
     animation: settings-search-target-pulse 650ms ease-in-out 2;
     border-radius: 0.75rem;
-  }
-
-  /* The pulse is the destination indicator; without it (reduced motion), the
-     focus outline takes over, so exactly one indicator shows at a time. */
-  [data-settings-page-scroll] .settings-search-target-pulse:focus {
-    outline: none;
   }
 
   [data-preview-panel-mode="inline"] [data-right-panel-surface-content] [data-surface-subheader] {
@@ -2572,4 +2570,21 @@ code {
 [data-workspace-area]:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: -2px;
+}
+
+/* The pulse is the destination indicator; without it (reduced motion), the focus outline takes
+   over, so exactly one indicator shows at a time. The utilities layer also outranks focus utilities. */
+@layer utilities {
+  /* Forced colors drop the pulse's shadow, so the outline stays there. */
+  @media (forced-colors: none) {
+    [data-settings-page-scroll] .settings-search-target-pulse:focus {
+      outline: none;
+    }
+  }
+
+  /* Grouped cards square their rows; a row that is a search target keeps the pulse's rounding. */
+  [data-settings-page-scroll]
+    [data-slot="settings-row"]:is(.settings-search-target-pulse, [id]:focus-visible) {
+    border-radius: 0.75rem;
+  }
 }

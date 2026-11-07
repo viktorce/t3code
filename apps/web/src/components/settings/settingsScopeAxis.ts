@@ -39,24 +39,91 @@ export function settingsScopeEnvironmentLabel(
   return secondary ? `${primary} · ${secondary}` : primary;
 }
 
-export function settingsScopeProjectMachines(
+const environmentList = new Intl.ListFormat("en", { type: "conjunction" });
+
+export function settingsScopeEnvironmentNames(
+  targets: readonly ScopeEnvironment[],
+  environments: readonly ScopeEnvironment[],
+) {
+  return environmentList.format(
+    targets.map((entry) => settingsScopeEnvironmentLabel(entry, environments)),
+  );
+}
+
+export function settingsScopeReconnectMessage(
+  targets: readonly ScopeEnvironment[],
+  environments: readonly ScopeEnvironment[],
+) {
+  return `Reconnect ${settingsScopeEnvironmentNames(targets, environments)} to load ${targets.length === 1 ? "its" : "their"} projects.`;
+}
+
+function settingsScopeProjectMachines(
   group: SidebarProjectSnapshot,
   environments: readonly ScopeEnvironment[],
-  includeAddresses = false,
 ) {
   const machines = group.memberProjects.map((member) => {
     const environment = environments.find((entry) => entry.environmentId === member.environmentId);
-    if (!environment) return member.environmentLabel ?? member.environmentId;
-    const { primary, secondary } = settingsScopeEnvironmentLabels(environment, environments);
-    const address =
-      secondary || (includeAddresses ? settingsScopeEnvironmentAddress(environment) : "");
-    return includeAddresses || address ? `${primary} · ${address}` : primary;
+    return environment
+      ? settingsScopeEnvironmentLabel(environment, environments)
+      : (member.environmentLabel ?? member.environmentId);
   });
   return Array.from(new Set(machines));
 }
 
+// Where a project lives on the chosen environment, or on all of them. The other checkouts are
+// counted after the first path; a count before it would read as checkouts inside that folder.
+export function settingsScopeProjectPath(
+  group: SidebarProjectSnapshot,
+  machine: string | undefined,
+) {
+  const members = machine
+    ? group.memberProjects.filter((member) => member.environmentId === machine)
+    : group.memberProjects;
+  const root = (machine ? members[0]?.workspaceRoot : undefined) ?? group.workspaceRoot;
+  const others = members.length - 1;
+  return others > 0 ? `${root} and ${others} more checkout${others === 1 ? "" : "s"}` : root;
+}
+
+export function settingsScopeSameNameProjects(
+  group: SidebarProjectSnapshot,
+  groups: readonly SidebarProjectSnapshot[],
+) {
+  return groups.filter(
+    (other) => other.projectKey !== group.projectKey && other.displayName === group.displayName,
+  );
+}
+
+// What tells a project apart from others with its name: its environments when they differ,
+// else its path. Null when no other project shares the name.
+export function settingsScopeProjectDistinction(
+  group: SidebarProjectSnapshot,
+  groups: readonly SidebarProjectSnapshot[],
+  environments: readonly ScopeEnvironment[],
+  machine: string | undefined,
+) {
+  const sameName = settingsScopeSameNameProjects(group, groups);
+  if (sameName.length === 0) return null;
+  const machinesOf = (candidate: SidebarProjectSnapshot) =>
+    settingsScopeProjectMachines(
+      machine
+        ? {
+            ...candidate,
+            memberProjects: candidate.memberProjects.filter(
+              (member) => member.environmentId === machine,
+            ),
+          }
+        : candidate,
+      environments,
+    ).join(", ");
+  const machines = machinesOf(group);
+  return sameName.some((other) => machinesOf(other) === machines)
+    ? settingsScopeProjectPath(group, machine)
+    : machines;
+}
+
 export const ALL_ENVIRONMENTS_VALUE = "all";
 export const ALL_PROJECTS_VALUE = "all";
+export const SCRATCH_PROJECT_DESCRIPTION = "Threads started without a project";
 
 export function environmentAxisValue(
   search: SettingsScopeSearch,

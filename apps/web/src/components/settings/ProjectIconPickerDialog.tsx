@@ -14,6 +14,7 @@ import {
   PROJECT_ICON_COLORS,
   projectIconColorClassName,
 } from "../../projectIconOptions";
+import { projectIconNameLabel } from "../../projectIconColors";
 import { cn } from "~/lib/utils";
 import { lucideIconByName } from "../../lib/lucideIconByName";
 import { Button } from "../ui/button";
@@ -36,13 +37,6 @@ const isMonogramText = Schema.is(ProjectMonogramText);
 function PickerIcon({ name }: { name: string }) {
   const icon = lucideIconByName(name);
   return icon ? createElement(icon, { className: "size-5" }) : null;
-}
-
-function iconLabel(name: string): string {
-  return name
-    .split("-")
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
 }
 
 export function ProjectIconPickerDialog({
@@ -174,7 +168,7 @@ function ProjectIconPickerBody({
                   <button
                     key={name}
                     type="button"
-                    aria-label={iconLabel(name)}
+                    aria-label={projectIconNameLabel(name)}
                     aria-pressed={iconName === name}
                     className={cn(
                       "flex aspect-square items-center justify-center rounded-md border border-transparent outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
