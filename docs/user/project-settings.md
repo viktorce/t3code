@@ -62,6 +62,19 @@ back. On mobile, both are in **Settings → Projects → Organize**.
 
 A project on several machines must have every machine connected to pin or archive it.
 
+## Remove projects
+
+To remove a project, open **Settings → Projects** and select the trash button on its row. It
+shows when you hover or focus the row, and always on touch screens. The project's own page has
+the same action under **Danger**, and a **Remove** button beside each checkout when it has
+several. On mobile, use **Settings → Projects**.
+
+Removing deletes the project's threads, including archived ones, from T3 Code and stops any
+agents still working in them. Files on disk and each provider's session history stay. Removing a
+project from the list removes its checkouts on every machine; to remove only one, pick that
+machine or checkout on the project's page. Every affected machine must be connected. A removal
+can't be undone, so archive a project instead if you only want it out of the way.
+
 ## Worktree branch names
 
 In **Settings → Worktrees → Worktree branch naming**, choose a static prefix,

@@ -1,25 +1,13 @@
 import { useComposerMenuState } from "../chat/useComposerMenuState";
-import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import { useEnvironmentsWithScope } from "../../state/session";
-import { mapAtomCommandResult, settlePromise } from "@t3tools/client-runtime/state/runtime";
-import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { planProjectRemoval } from "@t3tools/client-runtime/state/projects";
 import { type EnvironmentId, type SidebarProjectGroupingMode } from "@t3tools/contracts";
-import {
-  checkProjectAccess,
-  reportProjectFailure,
-  useProjectGroupUpdate,
-  type ProjectGroupUpdate,
-} from "../../hooks/useProjectGroupUpdate";
+import { useProjectGroupUpdate, type ProjectGroupUpdate } from "../../hooks/useProjectGroupUpdate";
 import { Navigate, useLocation, useNavigate } from "@tanstack/react-router";
 import { InfoIcon, Trash2Icon } from "lucide-react";
 import { lazy, Suspense, useRef, useState, type ReactNode } from "react";
 
-import { useComposerDraftStore } from "../../composerDraftStore";
-import { releaseProjectDraftUploads } from "../../lib/composerDraftUploads";
 import { persistClientSettingsUpdate, useClientSettings } from "../../hooks/useSettings";
-import { readLocalApi } from "../../localApi";
 import { derivePhysicalProjectKey } from "@t3tools/client-runtime/state/project-grouping";
 import {
   PROJECT_GROUPING_MODE_LABELS,
@@ -28,8 +16,6 @@ import {
   type SidebarProjectSnapshot,
 } from "../../sidebarProjectGrouping";
 import { useEnvironments, usePrimaryEnvironmentId } from "../../state/environments";
-import { useThreadShells, waitForProjectRemoval } from "../../state/entities";
-import { projectEnvironment } from "../../state/projects";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { Alert, AlertDescription } from "../ui/alert";
 import { Button } from "../ui/button";
@@ -51,14 +37,19 @@ import {
 import { ProjectActionsSettings } from "./ProjectActionsSettings";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
 import {
+  PROJECT_CHECKOUTS_TARGET_ID,
+  projectRemovalLabel,
+  type ProjectRemovalRequest,
+} from "./ProjectRemovalDialog";
+import {
   defaultProjectIcon,
   hasDefaultProjectIcon,
   projectGroupTitleNeedsUpdate,
   SCRATCH_PROJECT_TITLE,
 } from "./ProjectSettingsPanel.logic";
 import { useSettingsProjectGroups } from "./useSettingsProjectGroups";
-import { readUnloadedThreadCount } from "../../state/olderSettledShelf";
-import { settingsScopeEnvironmentLabels } from "./settingsScopeAxis";
+import { settingsScopeEnvironmentLabel, settingsScopeEnvironmentLabels } from "./settingsScopeAxis";
+import { PROJECT_LIST_TARGET_ID, projectRowTargetId } from "./SettingsScopeNotice";
 
 const ProjectIconPickerDialog = lazy(() =>
   import("./ProjectIconPickerDialog").then((module) => ({
@@ -163,11 +154,15 @@ export function ProjectSettingsPanel({
   environmentId = null,
   checkoutKey = null,
   unavailable,
+  onRemove,
+  removalOpen = false,
 }: {
   projectKey: string;
   environmentId?: EnvironmentId | null;
   checkoutKey?: string | null;
   unavailable?: ReactNode;
+  onRemove: (request: ProjectRemovalRequest) => void;
+  removalOpen?: boolean;
 }) {
   const groups = useSettingsProjectGroups();
   const pathname = useLocation({ select: (location) => location.pathname });
@@ -203,7 +198,12 @@ export function ProjectSettingsPanel({
           ),
         )
       : undefined;
-  if (successor) {
+  // A new search remounts the settings content, so a removal that regroups this project would
+  // lose its dialog; the redirect waits until the dialog closes, then hands focus to the
+  // surviving checkouts since the dialog's opener left with the old page.
+  const [heldForRemoval, setHeldForRemoval] = useState(false);
+  if (successor && removalOpen && !heldForRemoval) setHeldForRemoval(true);
+  if (successor && !removalOpen) {
     return (
       <Navigate
         to={pathname}
@@ -212,6 +212,9 @@ export function ProjectSettingsPanel({
           machine: environmentId ?? undefined,
           checkout: checkoutKey ?? undefined,
         }}
+        {...(heldForRemoval
+          ? { hash: PROJECT_CHECKOUTS_TARGET_ID, state: { settingsTargetHighlight: false } }
+          : {})}
         replace
         hashScrollIntoView={false}
       />
@@ -241,12 +244,16 @@ export function ProjectSettingsPanel({
     environmentId: members[0]!.environmentId,
     id: members[0]!.id,
   };
+  const index = groups.indexOf(selected);
+  const nextGroup = groups[index + 1] ?? groups[index - 1];
   return (
     <ProjectDetail
       key={`${selected.projectKey}:${environmentId ?? "all"}:${checkoutKey ?? "all"}`}
       group={scopedGroup}
       allMembers={selected.memberProjects}
       hasOtherMembers={members.length < selected.memberProjects.length}
+      nextProjectKey={nextGroup?.projectKey ?? null}
+      onRemove={onRemove}
     />
   );
 }
@@ -255,11 +262,16 @@ function ProjectDetail({
   group,
   allMembers,
   hasOtherMembers,
+  nextProjectKey,
+  onRemove,
 }: {
   group: SidebarProjectSnapshot;
   /** Pin and archive belong to the whole project, even when one machine is picked. */
   allMembers: ReadonlyArray<SidebarProjectGroupMember>;
   hasOtherMembers: boolean;
+  /** The list row that takes this project's place once it is removed. */
+  nextProjectKey: string | null;
+  onRemove: (request: ProjectRemovalRequest) => void;
 }) {
   const navigate = useNavigate({ from: "/settings" });
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -275,10 +287,6 @@ function ProjectDetail({
     group.memberProjects.find(
       (member) => environmentById.get(member.environmentId)?.serverConfig != null,
     ) ?? group.memberProjects[0]!;
-  const threads = useThreadShells();
-  const deleteProject = useOrchestrationCommand(projectEnvironment.delete, {
-    reportFailure: false,
-  });
   const projectNameEditedRef = useRef(false);
 
   const faviconPath = representative.faviconPath ?? null;
@@ -344,66 +352,31 @@ function ProjectDetail({
     group.memberProjects.every((member) => member.isScratch) &&
     group.memberProjects.some((member) => member.title !== SCRATCH_PROJECT_TITLE);
 
-  const removeMembers = async (members: ReadonlyArray<SidebarProjectGroupMember>) => {
-    if (checkProjectAccess(members, "Failed to remove project")) return;
-    const api = readLocalApi();
-    if (!api) return;
-
-    const { projectThreads, isWholeGroup, confirmationMessage } = planProjectRemoval({
-      members,
-      groupMemberCount: group.memberProjects.length,
+  // Afterwards this page's URL names only deleted checkouts, so it moves to what survives.
+  const removeScope = () =>
+    onRemove({
+      group,
+      members: group.memberProjects,
       hasOtherMembers,
-      displayName: group.displayName,
-      threads,
-      unloadedThreadCount: readUnloadedThreadCount(members, threads),
-    });
-    const confirmed = await settlePromise(() =>
-      api.dialogs.confirm(confirmationMessage, { variant: "destructive" }),
-    );
-    if (confirmed._tag === "Failure" || !confirmed.value) return;
-    if (checkProjectAccess(members, "Failed to remove project")) return;
-
-    const draftStore = useComposerDraftStore.getState();
-    for (const member of members) {
-      if (checkProjectAccess([member], "Failed to remove project")) return;
-      const memberThreads = projectThreads.filter(
-        (thread) => thread.environmentId === member.environmentId && thread.projectId === member.id,
-      );
-      const result = mapAtomCommandResult(
-        await deleteProject({
-          environmentId: member.environmentId,
-          input: {
-            projectId: member.id,
-            force: true,
-          },
+      // A new scope remounts the settings page, dialog included, so the hash names what
+      // takes focus there: the surviving checkouts, or the list row in this project's place.
+      onRemoved: () =>
+        navigate({
+          to: "/settings/projects",
+          search: ({ machine }) =>
+            hasOtherMembers
+              ? { project: group.projectKey, machine: undefined, checkout: undefined }
+              : { project: undefined, machine, checkout: undefined },
+          hash: hasOtherMembers
+            ? PROJECT_CHECKOUTS_TARGET_ID
+            : nextProjectKey
+              ? projectRowTargetId(nextProjectKey)
+              : PROJECT_LIST_TARGET_ID,
+          hashScrollIntoView: false,
+          state: { settingsTargetHighlight: false },
+          replace: true,
         }),
-        () => undefined,
-      );
-      if (result._tag === "Failure") {
-        reportProjectFailure(`Failed to remove "${member.title}"`, result);
-        return;
-      }
-      const projectRef = scopeProjectRef(member.environmentId, member.id);
-      await waitForProjectRemoval(projectRef);
-      releaseProjectDraftUploads(
-        projectRef,
-        memberThreads.map((thread) => scopeThreadRef(thread.environmentId, thread.id)),
-      );
-      const projectDraftThread = draftStore.getDraftThreadByProjectRef(projectRef);
-      if (projectDraftThread) {
-        draftStore.clearDraftThread(projectDraftThread.draftId);
-      }
-      draftStore.clearProjectDraftThreadId(projectRef);
-    }
-
-    if (isWholeGroup && !hasOtherMembers) {
-      void navigate({
-        to: "/settings/projects",
-        search: ({ machine }) => ({ project: undefined, machine, checkout: undefined }),
-        replace: true,
-      });
-    }
-  };
+    });
 
   const checkoutsByEnvironment = new Map<EnvironmentId, SidebarProjectGroupMember[]>();
   for (const member of group.memberProjects) {
@@ -411,10 +384,32 @@ function ProjectDetail({
     if (members) members.push(member);
     else checkoutsByEnvironment.set(member.environmentId, [member]);
   }
+  const listedCheckouts = [...checkoutsByEnvironment.values()].flat();
+  const removeCheckout = (member: SidebarProjectGroupMember) => {
+    const index = listedCheckouts.indexOf(member);
+    const next = listedCheckouts[index + 1] ?? listedCheckouts[index - 1];
+    onRemove({
+      group,
+      members: [member],
+      hasOtherMembers,
+      // The neighbor's Remove button, or its grouping rule once it is the last checkout.
+      focusAfterRemoval: () =>
+        next
+          ? ([
+              ...document.querySelectorAll<HTMLElement>(
+                `[data-checkout="${CSS.escape(next.physicalProjectKey)}"] button:not(:disabled)`,
+              ),
+            ].at(-1) ?? null)
+          : null,
+    });
+  };
   // A lone checkout is removed from the Danger section, but it still needs its grouping
   // rule here so "Keep separate" can be undone.
   const checkoutControls = (member: SidebarProjectGroupMember) => (
-    <div className="flex w-full min-w-0 items-center gap-2 @min-[32rem]/settings-row:w-auto">
+    <div
+      data-checkout={member.physicalProjectKey}
+      className="flex w-full min-w-0 items-center gap-2 @min-[32rem]/settings-row:w-auto"
+    >
       <div className="min-w-0 flex-1 @min-[32rem]/settings-row:w-72 @min-[32rem]/settings-row:flex-none">
         <CheckoutGroupingSelect member={member} />
       </div>
@@ -423,8 +418,15 @@ function ProjectDetail({
           size="sm"
           variant="outline"
           disabled={!editableIds.has(member.environmentId)}
-          onClick={() => void removeMembers([member])}
-          aria-label={`Remove checkout ${member.workspaceRoot}`}
+          onClick={() => removeCheckout(member)}
+          aria-label={`Remove checkout ${member.workspaceRoot} on ${
+            environmentById.has(member.environmentId)
+              ? settingsScopeEnvironmentLabel(
+                  environmentById.get(member.environmentId)!,
+                  environments,
+                )
+              : (member.environmentLabel ?? member.environmentId)
+          }`}
         >
           Remove
         </Button>
@@ -432,7 +434,7 @@ function ProjectDetail({
     </div>
   );
   const checkoutChoices = (
-    <SettingsSection title="Checkouts">
+    <SettingsSection id={PROJECT_CHECKOUTS_TARGET_ID} title="Checkouts">
       <p className="px-3 py-2.5 text-xs text-muted-foreground sm:px-4">
         Grouping rule decides how each checkout joins project groups in the sidebar. Changing it can
         move a checkout to a different project.
@@ -502,6 +504,17 @@ function ProjectDetail({
       })}
     </SettingsSection>
   );
+  const checkoutCount = group.memberProjects.length;
+  const removalLabel = projectRemovalLabel(group.memberProjects, hasOtherMembers);
+  const removalTargets = hasOtherMembers
+    ? checkoutCount === 1
+      ? "this checkout"
+      : `these ${checkoutCount} checkouts`
+    : checkoutCount === 1
+      ? "the project"
+      : `${checkoutCount === 2 ? "both" : `all ${checkoutCount}`} checkouts${
+          checkoutsByEnvironment.size > 1 ? ` on ${checkoutsByEnvironment.size} machines` : ""
+        }`;
 
   return (
     <>
@@ -659,32 +672,26 @@ function ProjectDetail({
         <SettingsSection title="Danger">
           <SettingsRow
             title={
-              hasOtherMembers
-                ? "Remove checkout"
-                : group.memberProjects.length > 1
-                  ? "Remove this project everywhere"
-                  : "Remove project"
+              !hasOtherMembers && checkoutsByEnvironment.size > 1
+                ? "Remove this project everywhere"
+                : removalLabel
             }
-            description={
+            description={`Removes ${removalTargets} and deletes ${
+              checkoutCount === 1 ? "its" : "their"
+            } threads. ${
               hasOtherMembers
-                ? "Deletes the selected machine's checkout entries and their threads. Other machines and files on disk are not touched."
-                : group.memberProjects.length > 1
-                  ? `Deletes all ${group.memberProjects.length} checkout entries and their threads on every machine. Files on disk are not touched.`
-                  : "Deletes the project entry and its threads. Files on disk are not touched."
-            }
+                ? `Files on disk and other checkouts of "${group.displayName}" stay.`
+                : "Files on disk stay."
+            }`}
             control={
               <Button
                 size="sm"
                 variant="destructive-outline"
                 disabled={!canEditGroup}
-                onClick={() => void removeMembers(group.memberProjects)}
+                onClick={removeScope}
               >
                 <Trash2Icon />
-                {hasOtherMembers
-                  ? "Remove checkout"
-                  : group.memberProjects.length > 1
-                    ? "Remove all entries"
-                    : "Remove project"}
+                {removalLabel}
               </Button>
             }
           />

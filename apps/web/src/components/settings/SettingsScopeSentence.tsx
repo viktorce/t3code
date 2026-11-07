@@ -54,6 +54,13 @@ export const SETTINGS_DEVICE_ONLY_PATHS: ReadonlySet<string> = new Set([
   "/settings/about",
 ]);
 
+type SettingsScopeAxis = "project" | "environment";
+
+/** A picker in the scope sentence, for focus whose own target left with a removal. */
+export function settingsScopeTrigger(axis: SettingsScopeAxis) {
+  return document.querySelector<HTMLElement>(`[data-settings-scope="${axis}"]`);
+}
+
 interface SettingsScopeMenuProps {
   readonly value: SettingsScopeSearch;
   readonly groups: readonly SidebarProjectSnapshot[];
@@ -116,7 +123,7 @@ function ScopeOptionLabel({ option }: { option: ScopeOption }) {
 }
 
 function ScopeMenu({
-  ariaLabel,
+  axis,
   icon,
   label,
   value,
@@ -125,7 +132,7 @@ function ScopeMenu({
   searchLabel,
   onChange,
 }: {
-  ariaLabel: string;
+  axis: SettingsScopeAxis;
   icon: ReactNode;
   label: string;
   value: string;
@@ -138,7 +145,8 @@ function ScopeMenu({
   const Trigger = options.length > 6 ? ComboboxTrigger : MenuTrigger;
   const trigger = (
     <Trigger
-      aria-label={`${ariaLabel}: ${label}`}
+      aria-label={`${axis === "project" ? "Project" : "Environment"} scope: ${label}`}
+      data-settings-scope={axis}
       render={<Button variant="outline" size="sm" />}
       className="min-w-0 max-w-72"
     >
@@ -249,7 +257,7 @@ function EnvironmentScopeMenu({
     : environments;
   return (
     <ScopeMenu
-      ariaLabel="Environment scope"
+      axis="environment"
       icon={
         selected ? (
           <EnvironmentMachineIcon
@@ -311,7 +319,7 @@ function ProjectScopeMenu({ value, groups, environments, onChange }: SettingsSco
   }));
   return (
     <ScopeMenu
-      ariaLabel="Project scope"
+      axis="project"
       icon={selected ? <ProjectFavicon project={selected} className="size-3.5 shrink-0" /> : null}
       label={selected?.displayName ?? (value.project ? "Unavailable project" : "All projects")}
       value={projectAxisValue(value)}
