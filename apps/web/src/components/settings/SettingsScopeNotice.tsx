@@ -1,17 +1,23 @@
 import { resolveEnvironmentMachineKind, type EnvironmentId } from "@t3tools/contracts";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import { ChevronRightIcon, LayersIcon } from "lucide-react";
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 
 import { cn } from "../../lib/utils";
 import type { SidebarProjectSnapshot } from "../../sidebarProjectGrouping";
 import { useEnvironments, type EnvironmentPresentation } from "../../state/environments";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { ProjectFavicon } from "../ProjectFavicon";
+import { MiddleTruncate } from "../ui/middle-truncate";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ITEM_ROW_CLASSNAME } from "./itemRows";
 import { SettingsGroup } from "./SettingsGroup";
-import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
+import {
+  SettingsPageContainer,
+  SettingsSearchTarget,
+  SettingsSection,
+  useSettingsSearchTarget,
+} from "./settingsLayout";
 import { useSettingsScope } from "./SettingsScopeContext";
 import type { SettingsScopeSearch } from "./settingsScope";
 import {
@@ -23,8 +29,61 @@ import {
 interface ScopeChoice {
   label: string;
   secondary?: string;
+  secondaryId?: string;
   icon: ReactNode;
+  action?: ReactNode;
   search: SettingsScopeSearch;
+}
+
+/** Hash targets that focus a project row, or the list when no row is left, after navigation. */
+export const projectRowTargetId = (projectKey: string) => `project:${projectKey}`;
+export const PROJECT_LIST_TARGET_ID = "project-list";
+
+function ScopeChoiceRow({ choice, onSelect }: { choice: ScopeChoice; onSelect: () => void }) {
+  const targetRef = useSettingsSearchTarget<HTMLButtonElement>(
+    choice.search.project && !choice.search.machine
+      ? projectRowTargetId(choice.search.project)
+      : undefined,
+  );
+  return (
+    <div
+      className={cn(
+        ITEM_ROW_CLASSNAME,
+        "group/scope-choice relative flex min-w-0 items-center gap-3 hover:bg-accent/50",
+      )}
+    >
+      {/* Its ::before covers the row, so a click anywhere outside the action opens the choice. */}
+      <button
+        ref={targetRef}
+        type="button"
+        data-project-key={choice.search.project}
+        className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-[inherit] text-left outline-none before:absolute before:inset-0 before:rounded-[inherit] focus-visible:before:ring-2 focus-visible:before:ring-inset focus-visible:before:ring-ring"
+        onClick={onSelect}
+      >
+        {choice.icon}
+        <span className="relative min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium">{choice.label}</span>
+          {choice.secondary ? (
+            <Tooltip>
+              <TooltipTrigger
+                id={choice.secondaryId}
+                render={<span className="flex min-w-0 text-xs text-muted-foreground" />}
+              >
+                <MiddleTruncate value={choice.secondary} showTitle={false} />
+              </TooltipTrigger>
+              <TooltipPopup>{choice.secondary}</TooltipPopup>
+            </Tooltip>
+          ) : null}
+        </span>
+      </button>
+      {choice.action ? (
+        <span className="relative flex shrink-0 items-center opacity-0 transition-opacity group-focus-within/scope-choice:opacity-100 group-hover/scope-choice:opacity-100 any-pointer-coarse:opacity-100">
+          {choice.action}
+        </span>
+      ) : null}
+      <ChevronRightIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+    </div>
+  );
 }
 
 export function SettingsScopeNotice({
@@ -32,6 +91,7 @@ export function SettingsScopeNotice({
   target,
   targetId,
   eligibleEnvironmentIds,
+  renderProjectAction,
   inline = false,
 }: {
   children: string;
@@ -40,8 +100,14 @@ export function SettingsScopeNotice({
   target: "environment" | "all" | "project" | "checkout";
   targetId?: string;
   eligibleEnvironmentIds?: readonly EnvironmentId[];
+  /**
+   * Shown at the end of a project row while it is hovered or focused, and always on touch.
+   * `descriptionId` is the id of the row's secondary text.
+   */
+  renderProjectAction?: (group: SidebarProjectSnapshot, descriptionId: string) => ReactNode;
 }) {
   const { selectScope, search, groups } = useSettingsScope();
+  const idPrefix = useId();
   const navigate = useNavigate({ from: "/settings" });
   const pathname = useLocation({ select: (location) => location.pathname });
   const { environments } = useEnvironments();
@@ -81,21 +147,27 @@ export function SettingsScopeNotice({
           };
         })
       : target === "project"
-        ? groups.map((group) => ({
-            label: group.displayName,
-            secondary: [
-              ...(group.archived ? ["Archived"] : []),
-              ...(groups.some(
-                (other) =>
-                  other.projectKey !== group.projectKey && other.displayName === group.displayName,
-              )
-                ? settingsScopeProjectMachines(group, environments)
-                : []),
-              group.workspaceRoot,
-            ].join(" · "),
-            icon: <ProjectFavicon project={group} className="size-4 shrink-0" />,
-            search: { project: group.projectKey },
-          }))
+        ? groups.map((group, index) => {
+            const secondaryId = `${idPrefix}-${index}`;
+            return {
+              label: group.displayName,
+              secondary: [
+                ...(group.archived ? ["Archived"] : []),
+                ...(groups.some(
+                  (other) =>
+                    other.projectKey !== group.projectKey &&
+                    other.displayName === group.displayName,
+                )
+                  ? settingsScopeProjectMachines(group, environments)
+                  : []),
+                group.workspaceRoot,
+              ].join(" · "),
+              secondaryId,
+              icon: <ProjectFavicon project={group} className="size-4 shrink-0" />,
+              action: renderProjectAction?.(group, secondaryId),
+              search: { project: group.projectKey },
+            };
+          })
         : target === "environment"
           ? environments
               .filter(
@@ -120,14 +192,10 @@ export function SettingsScopeNotice({
               },
             ];
     return choices.map((choice) => (
-      <button
+      <ScopeChoiceRow
         key={JSON.stringify(choice.search)}
-        type="button"
-        className={cn(
-          ITEM_ROW_CLASSNAME,
-          "flex w-full min-w-0 cursor-pointer items-center gap-3 text-left outline-none hover:bg-accent/50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-        )}
-        onClick={() => {
+        choice={choice}
+        onSelect={() => {
           if (targetId)
             void navigate({
               to: pathname,
@@ -141,30 +209,16 @@ export function SettingsScopeNotice({
             });
           else selectScope(choice.search);
         }}
-      >
-        {choice.icon}
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-medium">{choice.label}</span>
-          {choice.secondary ? (
-            <Tooltip>
-              <TooltipTrigger
-                render={<span className="block truncate text-xs text-muted-foreground" />}
-              >
-                {choice.secondary}
-              </TooltipTrigger>
-              <TooltipPopup>{choice.secondary}</TooltipPopup>
-            </Tooltip>
-          ) : null}
-        </span>
-        <ChevronRightIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-      </button>
+      />
     ));
   };
   const notice = (
     <div className="space-y-3">
-      <p role="status" className="px-3 text-sm text-muted-foreground sm:px-4">
-        {children}
-      </p>
+      <SettingsSearchTarget id={target === "project" ? PROJECT_LIST_TARGET_ID : undefined}>
+        <p role="status" className="px-3 text-sm text-muted-foreground sm:px-4">
+          {children}
+        </p>
+      </SettingsSearchTarget>
       <div className="space-y-4">
         {choiceGroups.map((group) =>
           group?.displayName ? (

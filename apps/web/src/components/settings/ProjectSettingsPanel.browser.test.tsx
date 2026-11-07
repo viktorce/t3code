@@ -12,6 +12,7 @@ import {
   ProviderInstanceId,
   type AuthEnvironmentScope,
   type AuthSessionState,
+  type ScopedProjectRef,
 } from "@t3tools/contracts";
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
@@ -24,6 +25,7 @@ import {
 } from "@tanstack/react-router";
 import * as Cause from "effect/Cause";
 import { AsyncResult, Atom } from "effect/reactivity";
+import { useSyncExternalStore } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
@@ -31,28 +33,44 @@ import { act, render, type Screen } from "../../../test/render";
 import type { Project } from "../../types";
 
 type SessionResult = AsyncResult.AsyncResult<AuthSessionState, Error>;
-const state = vi.hoisted(() => ({
-  sessions: new Map<EnvironmentId, Atom.Writable<SessionResult>>(),
-  projects: [] as Project[],
-  update:
-    vi.fn<
-      (request: {
-        environmentId: EnvironmentId;
-        input: UpdateProjectInput;
-      }) => Promise<AsyncResult.Success<void>>
-    >(),
-  delete:
-    vi.fn<
-      (request: {
-        environmentId: EnvironmentId;
-        input: DeleteProjectInput;
-      }) => Promise<AsyncResult.Success<void>>
-    >(),
-  confirm: vi.fn<() => Promise<boolean>>(),
-  releaseUploads: vi.fn(),
-  clearDraft: vi.fn(),
-  toast: vi.fn(),
-}));
+const state = vi.hoisted(() => {
+  let projects: Project[] = [];
+  const projectListeners = new Set<() => void>();
+  return {
+    sessions: new Map<EnvironmentId, Atom.Writable<SessionResult>>(),
+    // Writes re-render subscribers like the real store, so a delete shows in the UI.
+    get projects() {
+      return projects;
+    },
+    set projects(next: Project[]) {
+      projects = next;
+      for (const listener of projectListeners) listener();
+    },
+    subscribeProjects: (listener: () => void) => {
+      projectListeners.add(listener);
+      return () => void projectListeners.delete(listener);
+    },
+    update:
+      vi.fn<
+        (request: {
+          environmentId: EnvironmentId;
+          input: UpdateProjectInput;
+        }) => Promise<AsyncResult.Success<void>>
+      >(),
+    delete:
+      vi.fn<
+        (request: {
+          environmentId: EnvironmentId;
+          input: DeleteProjectInput;
+        }) => Promise<AsyncResult.Success<void> | AsyncResult.Failure<void, Error>>
+      >(),
+    offline: new Set<EnvironmentId>(),
+    waitForRemoval: vi.fn<(projectRef: ScopedProjectRef) => Promise<boolean>>(),
+    releaseUploads: vi.fn(),
+    clearDraft: vi.fn(),
+    toast: vi.fn(),
+  };
+});
 
 // Session grants come from the server; each test drives them through these atoms.
 vi.mock(import("@t3tools/client-runtime/state/session"), async (original) => {
@@ -69,20 +87,20 @@ vi.mock(import("@t3tools/client-runtime/state/session"), async (original) => {
 });
 vi.mock(import("~/state/environments"), async (original) => ({
   ...(await original()),
-  useEnvironments: (() => ({ environments })) as never,
+  useEnvironments: (() => ({ environments: currentEnvironments() })) as never,
   readEnvironment: ((id: EnvironmentId) =>
-    environments.find((environment) => environment.environmentId === id) ?? null) as never,
+    currentEnvironments().find((environment) => environment.environmentId === id) ?? null) as never,
   usePrimaryEnvironmentId: () => primaryId,
 }));
 vi.mock(import("~/state/entities"), async (original) => ({
   ...(await original()),
-  useProjects: (() => state.projects) as never,
+  useProjects: (() => useSyncExternalStore(state.subscribeProjects, () => state.projects)) as never,
   useThreadShells: () => [],
   useServerConfigs: (() =>
     new Map(
       environments.map((environment) => [environment.environmentId, environment.serverConfig]),
     )) as never,
-  waitForProjectRemoval: async () => true,
+  waitForProjectRemoval: state.waitForRemoval,
 }));
 vi.mock(import("~/state/projects"), async (original) => {
   const actual = await original();
@@ -103,10 +121,6 @@ vi.mock(import("~/hooks/useSettings"), async (original) => ({
   ...(await original()),
   useClientSettings: ((selector?: (settings: typeof DEFAULT_CLIENT_SETTINGS) => unknown) =>
     selector ? selector(DEFAULT_CLIENT_SETTINGS) : DEFAULT_CLIENT_SETTINGS) as never,
-}));
-vi.mock(import("~/localApi"), async (original) => ({
-  ...(await original()),
-  readLocalApi: (() => ({ dialogs: { confirm: state.confirm } })) as never,
 }));
 vi.mock(import("~/lib/composerDraftUploads"), async (original) => ({
   ...(await original()),
@@ -135,6 +149,7 @@ vi.mock(import("../files/projectFilesQueryState"), async (original) => ({
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { buildSidebarProjectSnapshots } from "../../sidebarProjectGrouping";
+import { useProjectRemoval } from "./ProjectRemovalDialog";
 import { ProjectSettingsPanel } from "./ProjectSettingsPanel";
 import { ProjectsSettings } from "./ProjectsSettings";
 import { SettingsScopeProvider } from "./SettingsScopeContext";
@@ -155,6 +170,12 @@ const environments = [primaryId, remoteId].map((environmentId) => ({
     environment: { platform: { machine: "server" }, capabilities: { projectOrganization: true } },
   },
 }));
+const currentEnvironments = () =>
+  environments.map((environment) =>
+    state.offline.has(environment.environmentId)
+      ? { ...environment, connection: { phase: "offline" } }
+      : environment,
+  );
 const session = (scopes: ReadonlyArray<AuthEnvironmentScope>): AuthSessionState => ({
   authenticated: true,
   scopes,
@@ -177,8 +198,9 @@ function deferred<T>() {
 }
 
 function setup() {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
   state.sessions.clear();
+  state.offline.clear();
   for (const id of [primaryId, remoteId])
     state.sessions.set(id, Atom.make<SessionResult>(writable()).pipe(Atom.keepAlive));
   state.projects = [primaryId, remoteId].map((environmentId) => ({
@@ -211,9 +233,22 @@ function setup() {
     );
     return AsyncResult.success(undefined);
   });
-  state.delete.mockResolvedValue(AsyncResult.success(undefined));
-  state.confirm.mockResolvedValue(true);
+  state.delete.mockImplementation(deleteFromStore);
+  state.waitForRemoval.mockResolvedValue(true);
   useComposerDraftStore.setState({ clearProjectDraftThreadId: state.clearDraft });
+}
+
+async function deleteFromStore({
+  environmentId,
+  input,
+}: {
+  environmentId: EnvironmentId;
+  input: DeleteProjectInput;
+}) {
+  state.projects = state.projects.filter(
+    (project) => project.environmentId !== environmentId || project.id !== input.projectId,
+  );
+  return AsyncResult.success(undefined);
 }
 
 function projectKey() {
@@ -223,6 +258,24 @@ function projectKey() {
     primaryEnvironmentId: primaryId,
     resolveEnvironmentLabel: (id) => id,
   })[0]!.projectKey;
+}
+
+function PanelWithRemoval(props: {
+  projectKey: string;
+  search: Omit<SettingsScopeSearch, "project">;
+}) {
+  const { requestRemoval, removalDialog } = useProjectRemoval();
+  return (
+    <>
+      <ProjectSettingsPanel
+        projectKey={props.projectKey}
+        environmentId={props.search.machine ? EnvironmentId.make(props.search.machine) : null}
+        checkoutKey={props.search.checkout ?? null}
+        onRemove={requestRemoval}
+      />
+      {removalDialog}
+    </>
+  );
 }
 
 async function mountPanel(search: Omit<SettingsScopeSearch, "project"> = {}) {
@@ -237,13 +290,7 @@ async function mountPanel(search: Omit<SettingsScopeSearch, "project"> = {}) {
   const projectsRoute = createRoute({
     getParentRoute: () => settingsRoute,
     path: "projects",
-    component: () => (
-      <ProjectSettingsPanel
-        projectKey={key}
-        environmentId={search.machine ? EnvironmentId.make(search.machine) : null}
-        checkoutKey={search.checkout ?? null}
-      />
-    ),
+    component: () => <PanelWithRemoval projectKey={key} search={search} />,
   });
   const query = new URLSearchParams({ project: key });
   for (const [name, value] of Object.entries(search)) {
@@ -275,12 +322,15 @@ async function mountSettings(search: SettingsScopeSearch) {
   );
   const route = createRootRoute({
     validateSearch: validateSettingsScopeSearch,
+    // Like the settings route: navigations that leave the scope out keep it.
+    search: { middlewares: [retainSettingsScope] },
     component: () => (
       <SettingsScopeProvider
         search={route.useSearch()}
         onChange={(next) => void router.navigate({ to: "/settings/projects", search: () => next })}
       >
-        <ProjectsSettings />
+        {/* Like `_chat.settings.tsx`, a new search remounts the settings content. */}
+        <ProjectsSettings key={JSON.stringify(route.useSearch())} />
       </SettingsScopeProvider>
     ),
   });
@@ -304,11 +354,20 @@ async function mountSettings(search: SettingsScopeSearch) {
 const nameInput = (screen: Screen) =>
   screen.container.querySelector<HTMLInputElement>('[aria-label="Project name"]')!;
 const removeCheckout = (screen: Screen, root: string) =>
-  screen.container.querySelector<HTMLButtonElement>(`[aria-label="Remove checkout ${root}"]`)!;
+  screen.container.querySelector<HTMLButtonElement>(`[aria-label^="Remove checkout ${root} on "]`)!;
 const removeAll = (screen: Screen) =>
   [...screen.container.querySelectorAll("button")].find((button) =>
-    button.textContent?.includes("Remove all entries"),
+    button.textContent?.includes("Remove everywhere"),
   )!;
+// Without app CSS the popup is unpositioned under Base UI's fixed inert layer, which would
+// take a pointer click, so the click goes to the button itself.
+async function confirmRemoval(
+  name: "Remove project" | "Remove checkout" | "Remove everywhere" | "Retry",
+) {
+  const button = page.getByRole("alertdialog").getByRole("button", { name });
+  await expect.element(button).toBeEnabled();
+  await act(async () => (button.element() as HTMLElement).click());
+}
 
 async function grant(id: EnvironmentId, result: SessionResult) {
   await act(async () => appAtomRegistry.set(state.sessions.get(id)!, result));
@@ -401,16 +460,18 @@ describe("project settings permissions", () => {
 
   it("removes a writable checkout while removal of the mixed group stays denied", async () => {
     setup();
+    const [primary] = state.projects;
     await grant(remoteId, AsyncResult.success(session([])));
     await using screen = await mountPanel();
     const initialHref = screen.router.state.location.href;
     expect(removeAll(screen).disabled).toBe(true);
 
     await userEvent.click(removeCheckout(screen, "/work/primary"));
+    await confirmRemoval("Remove checkout");
     await vi.waitFor(() => expect(state.delete).toHaveBeenCalledOnce());
     expect(state.delete).toHaveBeenCalledWith({
       environmentId: primaryId,
-      input: { projectId: state.projects[0]!.id, force: true },
+      input: { projectId: primary!.id, force: true },
     });
     await vi.waitFor(() => expect(state.releaseUploads).toHaveBeenCalledOnce());
     expect(state.clearDraft).toHaveBeenCalledOnce();
@@ -419,21 +480,37 @@ describe("project settings permissions", () => {
 
   it("rechecks every removal target after confirmation before deleting or clearing drafts", async () => {
     setup();
-    const confirmed = deferred<boolean>();
-    state.confirm.mockReturnValueOnce(confirmed.promise);
     await using screen = await mountPanel();
     await userEvent.click(removeAll(screen));
-    expect(state.confirm).toHaveBeenCalledOnce();
+    await expect.element(page.getByRole("alertdialog")).toBeVisible();
 
     await grant(remoteId, AsyncResult.success(session([])));
-    await act(async () => {
-      confirmed.resolve(true);
-      await confirmed.promise;
-    });
-    await expectProjectAccessDeniedToast("Failed to remove project");
+    await confirmRemoval("Remove everywhere");
+    await expect
+      .element(page.getByRole("alertdialog").getByRole("alert"))
+      .toHaveTextContent(
+        'Removed 0 of 2 checkouts. Couldn\'t remove "Shared repo" on remote: This connection can no longer change projects there.',
+      );
+    expect(state.toast).not.toHaveBeenCalled();
     expect(state.delete).not.toHaveBeenCalled();
     expect(state.releaseUploads).not.toHaveBeenCalled();
     expect(state.clearDraft).not.toHaveBeenCalled();
+
+    // The revoked grant disabled the opener, so focus goes to an enabled checkout control.
+    expect(removeAll(screen).disabled).toBe(true);
+    await act(async () =>
+      (
+        page
+          .getByRole("alertdialog")
+          .getByRole("button", { name: "Cancel" })
+          .element() as HTMLElement
+      ).click(),
+    );
+    await vi.waitFor(() => {
+      const focused = document.activeElement;
+      expect(document.getElementById("project-checkouts")?.contains(focused)).toBe(true);
+      expect(focused?.matches("button:enabled")).toBe(true);
+    });
   });
 
   it("does not save an edit whose grant was revoked mid-edit, and recovers when restored", async () => {
@@ -656,21 +733,249 @@ describe("project settings scope", () => {
   });
 });
 
-it("returns to the project overview after removal, clearing the selection but keeping the environment", async () => {
+describe("project list removal", () => {
+  const removeFromList = () => page.getByRole("button", { name: "Remove Shared repo" });
+
+  it("removes the project's checkouts on every machine, stale duplicates included, retrying only what failed", async () => {
+    setup();
+    const [primary, remote] = state.projects;
+    // The row shows only the fresher registration at this path; a missed stale one returns as a row.
+    const stale = {
+      ...primary!,
+      id: ProjectId.make("project-primary-stale"),
+      workspaceRoot: "/work/primary/",
+      updatedAt: "2025-12-01T00:00:00.000Z",
+    };
+    state.projects = [primary!, remote!, stale];
+    state.delete
+      .mockImplementationOnce(deleteFromStore)
+      .mockImplementationOnce(deleteFromStore)
+      .mockResolvedValueOnce(
+        AsyncResult.failure<void, Error>(Cause.fail(new Error("Database is locked."))),
+      );
+    await using _screen = await mountSettings({});
+    await userEvent.click(removeFromList());
+    await confirmRemoval("Remove everywhere");
+    const dialog = page.getByRole("alertdialog");
+    const alert = dialog.getByRole("alert");
+    await expect
+      .element(
+        alert.getByText(
+          'Removed 1 of 2 checkouts. Couldn\'t remove "Shared repo" on remote: Database is locked.',
+        ),
+      )
+      .toBeVisible();
+    await expect
+      .element(
+        alert.getByText(
+          'Some threads of "Shared repo" on remote may already be deleted. Retry finishes the removal.',
+        ),
+      )
+      .toBeVisible();
+    // The failed delete can already have removed threads, so there is nothing left to cancel.
+    await expect.element(dialog.getByRole("button", { name: "Close" })).toBeVisible();
+
+    await confirmRemoval("Retry");
+    await expect.element(dialog).not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole("button", { name: /^Shared repo/ }))
+      .not.toBeInTheDocument();
+    expect(state.delete.mock.calls.map(([request]) => request)).toEqual(
+      [primary!, stale, remote!, remote!].map((project) => ({
+        environmentId: project.environmentId,
+        input: { projectId: project.id, force: true },
+      })),
+    );
+  });
+
+  it("keeps the warning for a partly removed checkout when another one fails on retry", async () => {
+    setup();
+    state.delete.mockResolvedValueOnce(
+      AsyncResult.failure<void, Error>(Cause.fail(new Error("Database is locked."))),
+    );
+    await using _screen = await mountSettings({});
+    await userEvent.click(removeFromList());
+    await confirmRemoval("Remove everywhere");
+    const dialog = page.getByRole("alertdialog");
+    const warning = dialog.getByText(
+      'Some threads of "Shared repo" on primary may already be deleted. Retry finishes the removal.',
+    );
+    await expect.element(warning).toBeVisible();
+
+    await grant(remoteId, AsyncResult.success(session([])));
+    await confirmRemoval("Retry");
+    await expect
+      .element(
+        dialog.getByText(
+          /Couldn't remove "Shared repo" on remote: This connection can no longer change projects there\./,
+        ),
+      )
+      .toBeVisible();
+    await expect.element(warning).toBeVisible();
+    await expect.element(dialog.getByText("Incomplete", { exact: true })).toBeVisible();
+    expect(state.delete).toHaveBeenCalledOnce();
+  });
+
+  it("finishes when the store sync times out and hands focus to the next row, then the project scope", async () => {
+    setup();
+    state.waitForRemoval.mockResolvedValue(false);
+    state.projects = ["alpha", "beta"].map((name) => ({
+      ...state.projects[0]!,
+      id: ProjectId.make(name),
+      title: name,
+      workspaceRoot: `/work/${name}`,
+      repositoryIdentity: null,
+    }));
+    await using _screen = await mountSettings({});
+
+    await userEvent.click(page.getByRole("button", { name: "Remove alpha" }));
+    await confirmRemoval("Remove project");
+    await expect.element(page.getByRole("button", { name: /^alpha/ })).not.toBeInTheDocument();
+    await expect.element(page.getByRole("button", { name: /^beta/ })).toHaveFocus();
+    expect(state.toast).toHaveBeenCalledWith({ type: "success", title: 'Removed "alpha"' });
+
+    await userEvent.click(page.getByRole("button", { name: "Remove beta" }));
+    await confirmRemoval("Remove project");
+    await expect.element(page.getByRole("button", { name: /^beta/ })).not.toBeInTheDocument();
+    await expect.element(page.getByRole("button", { name: /^Project scope:/ })).toHaveFocus();
+  });
+
+  it("keeps removal disabled until every checkout's machine is connected", async () => {
+    setup();
+    state.offline.add(remoteId);
+    await using _screen = await mountSettings({});
+    await userEvent.click(removeFromList());
+    const dialog = page.getByRole("alertdialog");
+    await expect
+      .element(dialog.getByRole("status"))
+      .toHaveTextContent("Connect remote to remove this project.");
+    await expect.element(dialog.getByRole("button", { name: "Remove everywhere" })).toBeDisabled();
+  });
+
+  it("offers no list removal while any checkout's machine denies project changes", async () => {
+    setup();
+    await grant(remoteId, AsyncResult.success(session([])));
+    await using _screen = await mountSettings({});
+    await expect.element(page.getByRole("button", { name: /^Shared repo/ })).toBeVisible();
+    await expect.element(removeFromList()).not.toBeInTheDocument();
+  });
+});
+
+it.each([
+  {
+    removed: "the whole project",
+    projects: (projects: Project[]) => [projects[1]!],
+    action: "Remove project",
+    // Clears the selection but keeps the environment.
+    landing: () => ({ machine: remoteId }),
+    // With no other project, focus goes to the list itself.
+    focusTarget: "project-list",
+  },
+  {
+    removed: "the filtered checkout",
+    projects: (projects: Project[]) => projects,
+    action: "Remove checkout",
+    landing: () => ({ project: projectKey() }),
+    focusTarget: "project-checkouts",
+  },
+] as const)("lands on what survives after removing $removed", async (row) => {
   setup();
-  state.projects = [state.projects[1]!];
+  state.projects = row.projects(state.projects);
   await using screen = await mountPanel({ machine: remoteId, checkout: "remote:/work/remote" });
-  const removeProject = [...screen.container.querySelectorAll("button")].find(
-    (button) => button.textContent === "Remove project",
+  const remove = [...screen.container.querySelectorAll("button")].find(
+    (button) => button.textContent === row.action,
   )!;
 
-  await userEvent.click(removeProject);
+  await userEvent.click(remove);
+  await confirmRemoval(row.action);
 
   await vi.waitFor(() => {
     expect(screen.router.state.location.pathname).toBe("/settings/projects");
-    expect(screen.router.state.location.search).toEqual({ machine: remoteId });
+    expect(screen.router.state.location.search).toEqual(row.landing());
+    expect(screen.router.state.location.hash).toBe(row.focusTarget);
   });
 });
+
+it.each([
+  {
+    origin: "its page",
+    keepsOtherCheckout: false,
+    search: (key: string): SettingsScopeSearch => ({ project: key }),
+    trigger: () => page.getByRole("button", { name: "Remove project", exact: true }),
+    confirm: "Remove project",
+    // Once the dialog closes the page follows the regroup and focuses the surviving checkouts.
+    landing: (_key: string): SettingsScopeSearch => ({ project: projectKey() }),
+    focused: () => document.getElementById("project-checkouts"),
+  },
+  {
+    origin: "the list",
+    keepsOtherCheckout: false,
+    search: (_key: string): SettingsScopeSearch => ({}),
+    trigger: () => page.getByRole("button", { name: "Remove Shared repo" }),
+    confirm: "Remove project",
+    landing: (_key: string): SettingsScopeSearch => ({}),
+    focused: () => document.querySelector(`[data-project-key="${CSS.escape(projectKey())}"]`),
+  },
+  {
+    // The other checkout keeps the project, so the page stays and focus goes to that checkout.
+    origin: "a checkout whose project survives",
+    keepsOtherCheckout: true,
+    search: (key: string): SettingsScopeSearch => ({ project: key }),
+    trigger: () => page.getByRole("button", { name: /^Remove checkout \/work\/primary on / }),
+    confirm: "Remove checkout",
+    landing: (key: string): SettingsScopeSearch => ({ project: key }),
+    focused: () => document.querySelector('[aria-label^="Grouping rule for /work/remote "]'),
+  },
+] as const)(
+  "keeps the dialog and keyboard position when removal from $origin regroups the project",
+  async (row) => {
+    setup();
+    const [primary, remote] = state.projects;
+    // The visible registration has no identity, so the project borrows the stale one's.
+    const stale = {
+      ...primary!,
+      id: ProjectId.make("project-primary-stale"),
+      updatedAt: "2025-12-01T00:00:00.000Z",
+    };
+    state.projects = [
+      stale,
+      { ...primary!, repositoryIdentity: null },
+      ...(row.keepsOtherCheckout ? [remote!] : []),
+    ];
+    const key = projectKey();
+    const groupKeyOf = (root: string) =>
+      buildSidebarProjectSnapshots({
+        projects: state.projects,
+        settings: DEFAULT_CLIENT_SETTINGS,
+        primaryEnvironmentId: primaryId,
+        resolveEnvironmentLabel: (id) => id,
+      }).find((group) => group.memberProjects.some((member) => member.workspaceRoot === root))
+        ?.projectKey;
+    state.delete
+      .mockImplementationOnce(deleteFromStore)
+      .mockResolvedValueOnce(
+        AsyncResult.failure<void, Error>(Cause.fail(new Error("Database is locked."))),
+      );
+    await using screen = await mountSettings(row.search(key));
+    await userEvent.click(row.trigger());
+    await confirmRemoval(row.confirm);
+
+    const dialog = page.getByRole("alertdialog");
+    await expect
+      .element(dialog.getByText('Couldn\'t remove "Shared repo" on primary: Database is locked.'))
+      .toBeVisible();
+    expect(groupKeyOf("/work/primary")).not.toBe(key);
+    expect(screen.router.state.location.search).toEqual(row.search(key));
+
+    await act(async () =>
+      (dialog.getByRole("button", { name: "Close" }).element() as HTMLElement).click(),
+    );
+    await vi.waitFor(() => {
+      expect(screen.router.state.location.search).toEqual(row.landing(key));
+      expect(document.activeElement).toBe(row.focused());
+    });
+  },
+);
 
 describe("project name composition", () => {
   it.each([
