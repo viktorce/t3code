@@ -2,6 +2,7 @@ import { resolveEnvironmentMachineKind } from "@t3tools/contracts";
 
 import type { AppBarMenu } from "../../../components/ui/AppBar.types";
 import { ENVIRONMENT_MACHINE_SYMBOLS } from "../../../components/EnvironmentMachineSymbol";
+import { useEnvironments } from "../../../state/environments";
 import { useSettingsEnvironmentFilter } from "../settings-environment-filter";
 
 /** The settings scope filter, as an `AppBar` menu. */
@@ -13,9 +14,19 @@ export function useSettingsEnvironmentMenu(): AppBarMenu {
     selectAll,
     toggleEnvironment,
     selectableProjectGroups,
+    projectMembersOf,
     selectedProjectKey,
     selectProject,
   } = useSettingsEnvironmentFilter();
+  const { environments } = useEnvironments();
+  // A project whose checkouts are all on machines that aren't connected can be picked, but its pages
+  // can only say why they can't change it. One still loading its settings isn't offline.
+  const isOffline = (group: (typeof selectableProjectGroups)[number]) =>
+    !projectMembersOf(group).some(
+      (project) =>
+        environments.find((entry) => entry.environmentId === project.environmentId)?.connection
+          .phase === "connected",
+    );
   return {
     title: "Filter settings environments and projects",
     icon:
@@ -32,7 +43,7 @@ export function useSettingsEnvironmentMenu(): AppBarMenu {
         items: [
           {
             id: "all",
-            title: "All connected environments",
+            title: "All environments",
             selected: selectedIds === null,
             onPress: selectAll,
           },
@@ -60,7 +71,7 @@ export function useSettingsEnvironmentMenu(): AppBarMenu {
           },
           ...selectableProjectGroups.map((group) => ({
             id: `project:${group.key}`,
-            title: projectMenuLabel(group),
+            title: projectMenuLabel(group, isOffline(group)),
             selected: selectedProjectKey === group.key,
             onPress: () => selectProject(group.key),
           })),
@@ -70,5 +81,10 @@ export function useSettingsEnvironmentMenu(): AppBarMenu {
   };
 }
 
-const projectMenuLabel = (group: { readonly label: string; readonly archived: boolean }) =>
-  group.archived ? `${group.label} · Archived` : group.label;
+const projectMenuLabel = (
+  group: { readonly label: string; readonly archived: boolean },
+  offline: boolean,
+) =>
+  [group.label, ...(group.archived ? ["Archived"] : []), ...(offline ? ["Offline"] : [])].join(
+    " · ",
+  );

@@ -12,6 +12,7 @@ import {
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
 import {
+  ariaKeyShortcutsForCommand,
   effectiveShortcutsForCommand,
   formatShortcutLabel,
   isRichTextBoldShortcut,
@@ -298,6 +299,20 @@ describe("split/new/close terminal shortcuts", () => {
         context: { terminalOpen: true, terminalFocus: false },
       }),
     );
+  });
+});
+
+describe("ariaKeyShortcutsForCommand", () => {
+  it.each([
+    ["backspace", "MacIntel", "Shift+Meta+Backspace"],
+    ["arrowup", "Linux", "Control+Shift+ArrowUp"],
+    ["escape", "Linux", "Control+Shift+Escape"],
+    ["pagedown", "MacIntel", "Shift+Meta+PageDown"],
+  ] as const)("names %s the way KeyboardEvent.key does on %s", (key, platform, expected) => {
+    const bindings = compile([
+      { shortcut: modShortcut(key, { shiftKey: true }), command: "project.remove" },
+    ]);
+    assert.strictEqual(ariaKeyShortcutsForCommand(bindings, "project.remove", platform), expected);
   });
 });
 

@@ -142,6 +142,11 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   projectCloneTracking: Schema.optionalKey(Schema.Boolean),
   /** Server keeps `pinned` and `archived` from project.update. Older servers drop them. */
   projectOrganization: Schema.optionalKey(Schema.Boolean),
+  /**
+   * A removed project's worktree cleanup rule still applies to the worktrees its threads leave.
+   * Older servers drop it with the project, so those worktrees follow the machine's rule.
+   */
+  removedProjectCleanupRule: Schema.optionalKey(Schema.Boolean),
   /** Server answers projects.listIgnoredFiles. */
   ignoredFileListing: Schema.optionalKey(Schema.Boolean),
   environmentIcon: Schema.optionalKey(Schema.Boolean),

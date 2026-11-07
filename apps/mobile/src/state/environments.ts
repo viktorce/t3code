@@ -8,6 +8,7 @@ import type { ComposerEnvironmentCandidate } from "@t3tools/client-runtime/compo
 import { type EnvironmentId, resolveEnvironmentMachineKind } from "@t3tools/contracts";
 
 import { environmentCatalog } from "../connection/catalog";
+import { appAtomRegistry } from "./atom-registry";
 import { environmentPresentations } from "./presentation";
 
 export interface EnvironmentPresentation extends BaseEnvironmentPresentation {
@@ -28,6 +29,14 @@ export function projectEnvironmentPresentation(
     displayUrl: connectionCatalogDisplayUrl(presentation.entry),
     relayManaged: hasRelayRoute(presentation.entry),
   };
+}
+
+/** An environment as of now, for work that runs after the render that started it. */
+export function readEnvironment(environmentId: EnvironmentId): EnvironmentPresentation | null {
+  const presentation = appAtomRegistry
+    .get(environmentPresentations.presentationsAtom)
+    .get(environmentId);
+  return presentation ? projectEnvironmentPresentation(environmentId, presentation) : null;
 }
 
 export function useEnvironments() {

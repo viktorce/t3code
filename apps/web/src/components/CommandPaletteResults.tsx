@@ -4,7 +4,7 @@ import { ChevronRightIcon } from "lucide-react";
 import { type ReactNode, type RefObject, useState } from "react";
 import { cn } from "~/lib/utils";
 import { textDirection } from "~/textDirection";
-import { shortcutLabelForCommand } from "../keybindings";
+import { ariaKeyShortcutsForCommand, shortcutLabelForCommand } from "../keybindings";
 import {
   type CommandPaletteActionItem,
   type CommandPaletteGroup,
@@ -23,6 +23,7 @@ import {
 } from "./ui/command";
 import { getVirtualizedScrollFadeClassName } from "./ui/scroll-area";
 import { ProjectPinButton } from "./ProjectPinButton";
+import { ProjectRemoveButton, projectRemoveAction } from "./ProjectRemoveButton";
 import { SearchMatchHintLine, ThreadSearchMatchExcerpt } from "./ThreadSearchMatch";
 
 interface CommandPaletteResultsProps {
@@ -32,6 +33,7 @@ interface CommandPaletteResultsProps {
   isActionsOnly: boolean;
   keybindings: ResolvedKeybindingsConfig;
   onExecuteItem: (item: CommandPaletteActionItem | CommandPaletteSubmenuItem) => void;
+  onHoverItem?: (value: string) => void;
 }
 
 function CommandPaletteEmptyState(props: { emptyStateMessage?: string; isActionsOnly: boolean }) {
@@ -66,6 +68,7 @@ export function CommandPaletteResults(props: CommandPaletteResultsProps) {
                   keybindings={props.keybindings}
                   isActive={props.highlightedItemValue === item.value}
                   onExecuteItem={props.onExecuteItem}
+                  {...(props.onHoverItem ? { onHover: props.onHoverItem } : {})}
                 />
               )
             }
@@ -132,6 +135,7 @@ export function CommandPaletteVirtualizedResults(props: CommandPaletteVirtualize
               keybindings={props.keybindings}
               isActive={props.highlightedItemValue === row.item.value}
               onExecuteItem={props.onExecuteItem}
+              {...(props.onHoverItem ? { onHover: props.onHoverItem } : {})}
             />
           )
         }
@@ -227,9 +231,14 @@ function CommandPaletteResultRow(props: {
   isActive: boolean;
   keybindings: ResolvedKeybindingsConfig;
   onExecuteItem: (item: CommandPaletteActionItem | CommandPaletteSubmenuItem) => void;
+  onHover?: (value: string) => void;
 }) {
   const shortcutLabel = props.item.shortcutCommand
     ? shortcutLabelForCommand(props.keybindings, props.item.shortcutCommand)
+    : null;
+  const remove = props.item.kind === "action" ? props.item.remove : undefined;
+  const removeShortcutLabel = remove
+    ? shortcutLabelForCommand(props.keybindings, "project.remove")
     : null;
 
   return (
@@ -237,9 +246,18 @@ function CommandPaletteResultRow(props: {
       {...(props.index === undefined ? {} : { index: props.index })}
       value={props.item.value}
       active={props.isActive}
+      // The trash button is hidden from assistive technology, so the row names its shortcut.
+      {...(remove && removeShortcutLabel
+        ? {
+            "aria-keyshortcuts":
+              ariaKeyShortcutsForCommand(props.keybindings, "project.remove") ?? undefined,
+            "aria-description": `${projectRemoveAction(remove.name, remove.checkoutCount)} with ${removeShortcutLabel}`,
+          }
+        : {})}
       onMouseDown={(event) => {
         event.preventDefault();
       }}
+      onMouseMove={() => props.onHover?.(props.item.value)}
       onClick={() => {
         props.onExecuteItem(props.item);
       }}
@@ -269,13 +287,26 @@ function CommandPaletteResultRow(props: {
         </span>
       )}
       {props.item.titleTrailingContent}
-      {props.item.kind === "action" && props.item.pin ? (
-        <ProjectPinButton
-          name={props.item.pin.name}
-          pinned={props.item.pin.pinned}
-          onToggle={props.item.pin.toggle}
-          shortcutLabel={shortcutLabelForCommand(props.keybindings, "thread.pin")}
-        />
+      {props.item.kind === "action" && (props.item.pin || props.item.remove) ? (
+        // Coarse pointers widen each hit area to 44px; the gap keeps pin and remove from overlapping.
+        <span className="ms-auto flex items-center pointer-coarse:gap-5">
+          {props.item.pin ? (
+            <ProjectPinButton
+              name={props.item.pin.name}
+              pinned={props.item.pin.pinned}
+              onToggle={props.item.pin.toggle}
+              shortcutLabel={shortcutLabelForCommand(props.keybindings, "thread.pin")}
+            />
+          ) : null}
+          {props.item.remove ? (
+            <ProjectRemoveButton
+              name={props.item.remove.name}
+              checkoutCount={props.item.remove.checkoutCount}
+              onRemove={props.item.remove.request}
+              shortcutLabel={shortcutLabelForCommand(props.keybindings, "project.remove")}
+            />
+          ) : null}
+        </span>
       ) : null}
       {props.item.timestamp ? (
         <span className="min-w-12 shrink-0 text-right text-xs tabular-nums text-muted-foreground/70">
@@ -283,7 +314,7 @@ function CommandPaletteResultRow(props: {
         </span>
       ) : null}
       {shortcutLabel ? <CommandShortcut>{shortcutLabel}</CommandShortcut> : null}
-      {props.item.kind === "submenu" ? (
+      {props.item.kind === "submenu" || (props.item.kind === "action" && props.item.opensView) ? (
         <ChevronRightIcon className="-me-0.5 ms-auto size-4 shrink-0 text-muted-foreground/70" />
       ) : null}
     </CommandItem>

@@ -24,7 +24,17 @@ vi.mock("../hooks/useSettings", async (original) => ({
   useUpdateEnvironmentSettings: () => () => undefined,
 }));
 vi.mock("../hooks/useScratchProject", () => ({
-  useScratchProject: () => ({ scratchEnvironmentId: () => null }),
+  useScratchProject: () => ({
+    scratchEnvironmentId: () => null,
+    scratchWorkspaceRootFor: () => null,
+  }),
+}));
+vi.mock("../hooks/useProjectGroupUpdate", async (original) => ({
+  ...(await original<typeof import("../hooks/useProjectGroupUpdate")>()),
+  useProjectGroupRemoval: () => ({
+    canRemoveProjectGroup: () => true,
+    removeProjectMembers: async () => "removed" as const,
+  }),
 }));
 vi.mock("../hooks/useNewProject", () => ({ useNewProject: () => async () => undefined }));
 vi.mock("../hooks/useHandleNewThread", () => ({
@@ -65,7 +75,21 @@ vi.mock("../state/environments", async (original) => ({
 }));
 vi.mock("../state/entities", async (original) => ({
   ...(await original<typeof import("../state/entities")>()),
-  useProjects: () => [],
+  useProjects: () => [
+    {
+      id: "acme",
+      environmentId: "local",
+      title: "Acme",
+      workspaceRoot: "/home/dev/acme",
+      // A set icon skips the favicon lookup, which the atom mock above cannot answer.
+      projectIcon: { kind: "emoji", emoji: "🧪" },
+      repositoryIdentity: null,
+      defaultModelSelection: null,
+      createdAt: "2026-03-01T00:00:00.000Z",
+      updatedAt: "2026-03-01T00:00:00.000Z",
+      scripts: [],
+    },
+  ],
   useThreadShells: () => [],
   useVisibleThreadShells: () => [],
   useHiddenThreadKeys: () => new Set(),
@@ -146,4 +170,21 @@ it("keeps the caret in place when an edit briefly makes the folder path not a pa
   await expect.element(input()).toHaveValue("/workspace/project");
   await userEvent.keyboard("w");
   await expect.element(input()).toHaveValue("/wworkspace/project");
+});
+
+// regression: a path browsed folders there, and a word no project matched listed every command
+it("keeps what is typed in Remove a project to the projects it lists", async () => {
+  await using _screen = await render(<CommandPalette>{null}</CommandPalette>);
+  await act(() => openCommandPalette({ query: "Remove project" }));
+  await userEvent.keyboard("{Enter}");
+  const input = page.getByRole("combobox");
+  await expect.element(page.getByText("Remove a project")).toBeVisible();
+
+  await input.fill("/home/");
+  await expect.element(page.getByRole("option")).toHaveLength(1);
+  await expect.element(page.getByRole("option", { name: /Acme/ })).toBeVisible();
+  await input.fill("~/acme");
+  await expect.element(page.getByRole("option", { name: /Acme/ })).toBeVisible();
+  await input.fill("theme");
+  await expect.element(page.getByText("No matching projects.")).toBeVisible();
 });

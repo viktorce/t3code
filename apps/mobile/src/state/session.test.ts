@@ -21,7 +21,8 @@ vi.mock("@effect/atom-react", async () => {
   };
 });
 vi.mock("../connection/runtime", () => ({ connectionAtomRuntime: {} }));
-vi.mock("@t3tools/client-runtime/state/session", () => ({
+vi.mock("@t3tools/client-runtime/state/session", async (original) => ({
+  ...(await original<typeof import("@t3tools/client-runtime/state/session")>()),
   createEnvironmentSessionAtoms: () => ({
     sessionStateAtom: Atom.family((_id: EnvironmentId) =>
       Atom.make(AsyncResult.initial<AuthSessionState, Error>()).pipe(Atom.keepAlive),
@@ -34,6 +35,7 @@ import {
   environmentSession,
   readEnvironmentScope,
   useEnvironmentScope,
+  useEnvironmentScopeStates,
   useEnvironmentsWithScope,
 } from "./session";
 
@@ -70,6 +72,14 @@ it("keeps pending and denied environments out of worker grants while retaining v
   expect(useEnvironmentsWithScope(environments, AuthOrchestrationOperateScope)).toEqual(
     new Set([primary]),
   );
+  // A session that hasn't loaded grants nothing yet, but hasn't refused either.
+  const states = () => useEnvironmentScopeStates(environments, AuthOrchestrationOperateScope);
+  expect(states()).toEqual(
+    new Map([
+      [primary, "granted"],
+      [secondary, "unknown"],
+    ]),
+  );
   appAtomRegistry.set(source(secondary), AsyncResult.waiting(AsyncResult.success(session(true))));
   expect(readEnvironmentScope(secondary, AuthOrchestrationOperateScope)).toBe(true);
   expect(useEnvironmentsWithScope(environments, AuthOrchestrationOperateScope)).toEqual(
@@ -77,6 +87,13 @@ it("keeps pending and denied environments out of worker grants while retaining v
   );
   appAtomRegistry.set(source(secondary), AsyncResult.success(session(false)));
   expect(useEnvironmentScope(secondary, AuthOrchestrationOperateScope)).toBe(false);
+  expect(states().get(secondary)).toBe("denied");
+  // A failed check is retried, and says nothing about the grant either way.
+  appAtomRegistry.set(
+    source(secondary),
+    AsyncResult.failure(Cause.fail(new Error("Session lookup failed"))),
+  );
+  expect(states().get(secondary)).toBe("unknown");
 });
 
 it("reacts to grant revocation, failure, and regrant without a connection list change", () => {

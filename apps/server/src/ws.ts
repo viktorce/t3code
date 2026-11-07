@@ -3007,6 +3007,9 @@ export const layerWsRpc = (
                     cause._tag === "ProjectNotEmptyError"
                       ? cause.message
                       : "Failed to mutate project.",
+                  ...(cause._tag === "ProjectNotFoundError"
+                    ? { reason: "not-found" as const }
+                    : {}),
                   cause,
                 }),
             ),

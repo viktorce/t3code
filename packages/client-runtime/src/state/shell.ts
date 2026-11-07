@@ -588,6 +588,28 @@ export function createEnvironmentShellSummaryAtom(input: {
   }).pipe(Atom.withLabel("environment-shell-summary"));
 }
 
+/** Environments whose threads reflect the server now, not a cache or a resync in flight. */
+export function createLiveShellEnvironmentIdsAtom(input: {
+  readonly catalogValueAtom: Atom.Atom<EnvironmentCatalogState>;
+  readonly statusAtom: (environmentId: EnvironmentId) => Atom.Atom<EnvironmentShellStatus>;
+}) {
+  let previous: ReadonlySet<EnvironmentId> = new Set();
+  return Atom.make((get) => {
+    const next = new Set<EnvironmentId>();
+    for (const environmentId of enabledEnvironmentIds(get(input.catalogValueAtom))) {
+      if (get(input.statusAtom(environmentId)) === "live") next.add(environmentId);
+    }
+    if (
+      next.size === previous.size &&
+      [...next].every((environmentId) => previous.has(environmentId))
+    ) {
+      return previous;
+    }
+    previous = next;
+    return next;
+  });
+}
+
 export function createEnvironmentServerConfigsAtom(input: {
   readonly catalogValueAtom: Atom.Atom<EnvironmentCatalogState>;
   readonly serverConfigValueAtom: (environmentId: EnvironmentId) => Atom.Atom<ServerConfig | null>;

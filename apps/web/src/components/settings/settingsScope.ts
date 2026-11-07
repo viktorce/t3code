@@ -6,6 +6,9 @@ import type {
 } from "../../sidebarProjectGrouping";
 import type { EnvironmentPresentation } from "../../state/environments";
 
+/** The project page's Checkouts section, where each checkout has its own Remove. */
+export const PROJECT_CHECKOUTS_SECTION_ID = "project-checkouts";
+
 export interface SettingsScopeSearch {
   project?: string | undefined;
   machine?: string | undefined;

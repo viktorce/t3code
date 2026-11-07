@@ -1,5 +1,11 @@
 import { pipe } from "effect/Function";
-import type { AuthSessionState, EnvironmentId, ServerConfig } from "@t3tools/contracts";
+import {
+  sessionGrantsScope,
+  type AuthEnvironmentScope,
+  type AuthSessionState,
+  type EnvironmentId,
+  type ServerConfig,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -228,6 +234,21 @@ function makeEnvironmentSessionAtoms<R, E>(
 }
 
 const sessionAtomsByRuntime = new WeakMap<object, ReturnType<typeof makeEnvironmentSessionAtoms>>();
+
+/**
+ * A session's grant of a scope. Only a session that loads without the scope refuses it. One that
+ * hasn't loaded since the app started, or whose last check failed and is being retried, grants
+ * nothing and refuses nothing: its grant is unknown.
+ */
+export function sessionScopeState(
+  result: AsyncResult.AsyncResult<AuthSessionState, unknown>,
+  scope: AuthEnvironmentScope,
+): "granted" | "denied" | "unknown" {
+  if (result._tag === "Failure") return "unknown";
+  const session = AsyncResult.getOrElse(result, () => null);
+  if (session === null) return "unknown";
+  return sessionGrantsScope(session, scope) ? "granted" : "denied";
+}
 
 export function createEnvironmentSessionAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, E>,

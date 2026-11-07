@@ -1,6 +1,7 @@
 import { ArrowDownIcon, ArrowUpIcon } from "lucide-react";
 import { type ComponentProps, type ReactNode, type RefObject } from "react";
 
+import { cn } from "~/lib/utils";
 import { Command, CommandFooter, CommandInput, CommandPanel } from "./ui/command";
 import { Kbd, KbdGroup } from "./ui/kbd";
 
@@ -42,6 +43,10 @@ type CommandPaletteContentProps = Omit<ComponentProps<typeof Command>, "children
   readonly children: ReactNode;
   readonly escapeLabel?: ReactNode;
   readonly footerActionLabel?: ReactNode;
+  /** Dims the Enter hint while Enter has nothing to run, instead of moving the hints beside it. */
+  readonly footerActionDisabled?: boolean;
+  /** Dims the arrow keys' hint while there are no rows to move through. */
+  readonly footerNavigationDisabled?: boolean;
   readonly footerTrailing?: ReactNode;
   readonly inputAccessory?: ReactNode;
   readonly inputProps: ComponentProps<typeof CommandInput>;
@@ -55,6 +60,8 @@ export function CommandPaletteContent({
   children,
   escapeLabel = "Close",
   footerActionLabel,
+  footerActionDisabled = false,
+  footerNavigationDisabled = false,
   footerTrailing,
   inputAccessory,
   inputProps,
@@ -92,20 +99,24 @@ export function CommandPaletteContent({
         </CommandPanel>
         <CommandFooter className="max-sm:flex-col max-sm:items-start">
           <div className="flex items-center gap-3">
-            <KbdGroup>
-              <Kbd>
-                <ArrowUpIcon />
-              </Kbd>
-              <Kbd>
-                <ArrowDownIcon />
-              </Kbd>
-              <span>Navigate</span>
-            </KbdGroup>
-            {footerActionLabel !== undefined ? (
+            <span className={cn("inline-flex", footerNavigationDisabled && "opacity-64")}>
               <KbdGroup>
-                <Kbd>Enter</Kbd>
-                <span>{footerActionLabel}</span>
+                <Kbd>
+                  <ArrowUpIcon />
+                </Kbd>
+                <Kbd>
+                  <ArrowDownIcon />
+                </Kbd>
+                <span>Navigate</span>
               </KbdGroup>
+            </span>
+            {footerActionLabel !== undefined ? (
+              <span className={cn("inline-flex", footerActionDisabled && "opacity-64")}>
+                <KbdGroup>
+                  <Kbd>Enter</Kbd>
+                  <span>{footerActionLabel}</span>
+                </KbdGroup>
+              </span>
             ) : null}
             {showBackHint ? (
               <KbdGroup>

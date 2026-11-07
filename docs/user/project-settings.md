@@ -41,12 +41,12 @@ the server-setting pages, such as Threads, Source control and Worktrees, edit th
 environments' defaults. Choosing a project edits its overrides on the selected
 environments. Use **Use defaults** in a page to remove that page's project overrides.
 Open **Settings → Projects** to rename the project across its selected
-connected checkouts and see where those checkouts live.
+checkouts and see where those checkouts live.
 Settings that are environment-wide stay read-only while a project is selected. When selected
 targets disagree, a control shows **Mixed** until you choose one value. Appearance, keyboard,
 and other phone-only settings ignore the filter.
 
-## Pin and archive projects
+## Pin, archive, and remove projects
 
 Pinned projects come first in the project pickers: the project picker on a new thread, the
 new-thread list, the command palette, the sidebar project filter, and mobile. In the boring sidebar, pinned projects get the top
@@ -60,7 +60,15 @@ Its threads, settings, and files stay as they are, and archived projects still s
 Settings project list, marked **Archived**. Choose one there and select **Unarchive** to bring it
 back. On mobile, both are in **Settings → Projects → Organize**.
 
-A project on several machines must have every machine connected to pin or archive it.
+Remove a project to delete it and all of its threads, archived ones included, from T3 Code.
+Removal can't be undone. Project folders stay on disk; thread worktrees follow
+[storage cleanup settings](#storage-cleanup). In the command palette, press the remove shortcut
+(`mod+shift+backspace` by default) on a highlighted project, or search for **Remove project** and
+choose one. Confirm with the remove shortcut or the remove button. The palette removes every
+checkout of the project; to remove a single checkout, use **Settings → Projects**.
+
+A project on several machines must have every machine connected to rename, pin, or archive it,
+or to remove it everywhere.
 
 ## Worktree branch names
 
