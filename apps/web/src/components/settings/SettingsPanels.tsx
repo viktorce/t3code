@@ -1664,7 +1664,7 @@ export function ThreadsSettingsPanel() {
         <SettingsRow
           serverScoped
           {...searchableSetting("auto-resume-connection-errors")}
-          description="Automatically resume threads that stopped on a connection error once their machine can reach the provider again. You can cancel auto-resume in each thread."
+          description="Automatically resume threads after future connection errors, once their machine can reach the provider again. Turning this off doesn't cancel threads already set to auto-resume."
           control={
             <Switch
               checked={connectionMock.autoResumeSetting}

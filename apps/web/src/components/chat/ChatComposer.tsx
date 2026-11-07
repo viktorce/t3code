@@ -476,6 +476,8 @@ export interface ChatComposerProps {
     submissionIntent?: ComposerSubmissionIntent,
   ) => void;
   onResume: () => void;
+  resumeLabel?: string | undefined;
+  sendLabel?: string | undefined;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
   onSelectActivePendingUserInputOption: (questionId: string, optionValue: string) => void;
@@ -588,6 +590,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onCompactContext,
     onSend,
     onResume,
+    resumeLabel,
+    sendLabel,
     onInterrupt,
     onImplementPlanInNewThread,
     onSelectActivePendingUserInputOption,
@@ -1272,7 +1276,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     environmentUnavailable !== null ||
     (!composerSendState.hasSendableContent && !showResumeAction);
   const collapsedComposerPrimaryActionLabel = showResumeAction
-    ? "Resume thread"
+    ? (resumeLabel ?? "Resume thread")
     : props.resumeCompactionTokens !== null && !props.keepFullHistory
       ? "Open composer to compact and send"
       : "Send message";
@@ -3667,6 +3671,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     isEditingQueuedMessage={isEditingQueuedMessage}
                     onSubmitMessage={handleSubmitMessageStable}
                     onResume={onResume}
+                    resumeLabel={resumeLabel}
+                    sendLabel={sendLabel}
                     onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                     onInterrupt={handleInterruptPrimaryActionStable}
                     onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryActionStable}

@@ -7,6 +7,12 @@ export interface ConnectionMockState {
   readonly reachable: boolean;
   /** Thread ids scheduled to resume when the provider is reachable again. */
   readonly autoResume: Readonly<Record<string, true>>;
+  /** Thread ids whose auto-resume gave up after its last allowed attempt. */
+  readonly gaveUp: Readonly<Record<string, true>>;
+  /** Messages sent during the outage, held until the thread resumes. */
+  readonly held: Readonly<
+    Record<string, ReadonlyArray<{ readonly id: string; readonly text: string }>>
+  >;
   /** Thread ids resumed after the connection came back. */
   readonly resumed: Readonly<Record<string, true>>;
   readonly checkedAt: string | null;
@@ -18,6 +24,8 @@ const INITIAL: ConnectionMockState = {
   online: false,
   reachable: false,
   autoResume: {},
+  gaveUp: {},
+  held: {},
   resumed: {},
   checkedAt: null,
   autoResumeSetting: false,
@@ -45,6 +53,10 @@ export function setConnectionMock(update: (current: ConnectionMockState) => Conn
   for (const listener of listeners) listener();
 }
 
+export function getConnectionMock(): ConnectionMockState {
+  return state;
+}
+
 export function useConnectionMock(): ConnectionMockState {
   return useSyncExternalStore(
     (listener) => {
@@ -55,9 +67,12 @@ export function useConnectionMock(): ConnectionMockState {
   );
 }
 
-(window as unknown as { __connMock: unknown }).__connMock = {
-  get: () => state,
-  set: (next: Partial<ConnectionMockState>) =>
-    setConnectionMock((current) => ({ ...current, ...next })),
-  reset: () => setConnectionMock(() => INITIAL),
-};
+// Drives the prototype's states from the console; tests run without a window.
+if (typeof window !== "undefined") {
+  (window as unknown as { __connMock: unknown }).__connMock = {
+    get: () => state,
+    set: (next: Partial<ConnectionMockState>) =>
+      setConnectionMock((current) => ({ ...current, ...next })),
+    reset: () => setConnectionMock(() => INITIAL),
+  };
+}

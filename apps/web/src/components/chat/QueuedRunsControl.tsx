@@ -92,6 +92,9 @@ export function QueuedRunsControl({
   readonly onCancelEdit: () => void;
   readonly timestampFormat: TimestampFormat;
   readonly onOpenThread: (threadId: ThreadId) => void;
+  /** Messages sent while the provider was unreachable; they go out after the thread resumes. */
+  readonly heldMessages?: ReadonlyArray<{ readonly id: string; readonly text: string }>;
+  readonly heldLabel?: string;
 }) {
   const projection = useThreadProjection(
     scopeThreadRef(props.environmentId, props.threadId),
@@ -147,6 +150,7 @@ export function QueuedRunsControl({
           url: queuedImageUrlById.get(attachment.id) ?? null,
         })),
       pending: false,
+      heldLabel: undefined as string | undefined,
     })),
     ...optimisticQueued.map((message) => ({
       key: message.id,
@@ -166,6 +170,21 @@ export function QueuedRunsControl({
           url: attachment.previewUrl ?? null,
         })),
       pending: true,
+      heldLabel: undefined as string | undefined,
+    })),
+    ...(props.heldMessages ?? []).map((message) => ({
+      key: message.id,
+      message: undefined,
+      runId: null,
+      messageId: null,
+      freshContext: false,
+      serverIndex: null,
+      text: message.text,
+      editable: false,
+      attachments: [] as ReadonlyArray<ContractChatAttachment>,
+      thumbnails: [] as ReadonlyArray<QueuedRowThumbnail>,
+      pending: true,
+      heldLabel: props.heldLabel,
     })),
   ];
 
@@ -275,7 +294,7 @@ export function QueuedRunsControl({
                 timestampFormat={props.timestampFormat}
                 onOpenThread={props.onOpenThread}
               >
-                {canSendRun(item.freshContext) && !isEditing ? (
+                {canSendRun(item.freshContext) && !isEditing && item.heldLabel === undefined ? (
                   <>
                     <Tooltip>
                       <TooltipTrigger render={<span className="flex shrink-0" />}>
@@ -302,7 +321,7 @@ export function QueuedRunsControl({
                 {item.pending ? (
                   <span className="flex items-center gap-1 px-1">
                     <Clock3Icon aria-hidden className="size-3" />
-                    Saving
+                    {item.heldLabel ?? "Saving"}
                   </span>
                 ) : null}
                 {isEditing ? (

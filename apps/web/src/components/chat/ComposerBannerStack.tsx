@@ -185,7 +185,11 @@ function NoticeCard({
           {item.icon}
         </ComposerBanner.Icon>
         <ComposerBanner.Content
-          className={item.wrapActions ? "flex-none whitespace-nowrap" : "whitespace-nowrap"}
+          className={
+            item.wrapActions
+              ? "flex-none whitespace-nowrap @max-[400px]:flex-wrap"
+              : "whitespace-nowrap"
+          }
         >
           <NoticeText
             detailsLabel={
@@ -206,7 +210,7 @@ function NoticeCard({
               }
               className={
                 item.wrapActions
-                  ? "min-w-0 truncate text-muted-foreground @max-[400px]:sr-only"
+                  ? "min-w-0 truncate text-muted-foreground @max-[400px]:basis-full"
                   : "w-0 min-w-0 grow truncate text-muted-foreground @max-[400px]:sr-only"
               }
             >
