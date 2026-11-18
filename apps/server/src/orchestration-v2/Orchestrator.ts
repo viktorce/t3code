@@ -74,6 +74,7 @@ import {
   type ProviderSessionId,
   RunId,
   RuntimeMode,
+  type ScheduledTaskId,
   ThreadLinkedPullRequest,
   ThreadId,
   TurnItemId,
@@ -1325,6 +1326,40 @@ function pendingForkTransferForThread(
       transfer.targetThreadId === projection.thread.id &&
       transfer.status === "pending",
   );
+}
+
+/** A fork transfer still pending after a fresh run would apply to the next send. */
+function forkTransferSupersededEvent(
+  transfer: OrchestrationV2ContextTransfer,
+  runId: RunId,
+  providerInstanceId: ProviderInstanceId,
+  now: DateTime.Utc,
+): Omit<OrchestrationV2DomainEvent, "id"> {
+  return {
+    type: "context-transfer.updated",
+    threadId: transfer.targetThreadId,
+    runId,
+    providerInstanceId,
+    occurredAt: now,
+    payload: {
+      ...transfer,
+      status: "superseded",
+      error: `Superseded by fresh session run ${runId}.`,
+      updatedAt: now,
+    },
+  };
+}
+
+/**
+ * A schedule's fresh run is a side conversation, so it leaves a pending fork for the user's next
+ * message. Side chats keep theirs too: their first-message digest of the parent still reaches a
+ * later fresh run after a failed first run, so /clear there needs that digest dropped first.
+ */
+function freshRunSupersedesFork(
+  thread: Pick<OrchestrationV2AppThread, "lineage">,
+  message: { readonly scheduledTaskId?: ScheduledTaskId | undefined },
+): boolean {
+  return message.scheduledTaskId === undefined && thread.lineage.sideChat !== true;
 }
 
 function pendingMergeBackTransfersForThread(
@@ -2589,6 +2624,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
       const followsCurrent = followsCurrentConversation(queuedMessage);
       const freshContext = queuedRun.freshContext === true;
+      const supersededForkTransfer =
+        freshContext && freshRunSupersedesFork(projection.thread, queuedMessage)
+          ? pendingForkTransferForThread(projection)
+          : undefined;
       const activeProviderThread = dispatchProviderThread(projection, queuedMessage, freshContext);
       const contextBoundary = freshContext ? ordinal : contextBoundaryOrdinal(projection);
       // A run queued before a fresh run started is bound to the conversation that run left behind.
@@ -3106,6 +3145,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 },
               ]
             : []),
+          ...(supersededForkTransfer === undefined
+            ? []
+            : [
+                forkTransferSupersededEvent(
+                  supersededForkTransfer,
+                  queuedRun.id,
+                  queuedRun.providerInstanceId,
+                  now,
+                ),
+              ]),
           ...(handoff === null || transferId === null || latestHandoffRun === undefined
             ? []
             : [
@@ -7983,9 +8032,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         },
       });
     }
+    // A merge-back adds to the current session, so it must land before a fresh one starts. The same
+    // goes for a fork that freshRunSupersedesFork keeps, for schedules and side chats.
     if (
       freshContext &&
-      (pendingForkTransfer !== undefined || pendingMergeBackTransfer !== undefined)
+      (pendingMergeBackTransfer !== undefined ||
+        (pendingForkTransfer !== undefined && !freshRunSupersedesFork(projection.thread, command)))
     ) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
@@ -8055,9 +8107,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
 
     if (
-      pendingForkTransfer === undefined &&
-      pendingMergeBackTransfer === undefined &&
-      (!isProviderSwitch || freshContext)
+      freshContext ||
+      (pendingForkTransfer === undefined &&
+        pendingMergeBackTransfer === undefined &&
+        !isProviderSwitch)
     ) {
       const reusableProviderThread = freshContext ? undefined : activeProviderThread;
       const adapter = yield* providerAdapters.get(modelSelection.instanceId).pipe(
@@ -8321,6 +8374,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           occurredAt: now,
           payload: legacyImportHandoff,
         });
+      }
+      // Only a fresh run gets here with a fork pending.
+      if (pendingForkTransfer !== undefined) {
+        yield* emitEvent(
+          forkTransferSupersededEvent(pendingForkTransfer, runId, modelSelection.instanceId, now),
+        );
       }
       yield* emitEvent({
         type: "run.created",

@@ -14,6 +14,7 @@ import {
   ProviderTurnId,
   RunAttemptId,
   RunId,
+  ScheduledTaskId,
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
@@ -1319,7 +1320,7 @@ it.effect("a side chat opened during the parent's first turn starts from a diges
   }).pipe(Effect.provide(forkCases[0]!.layer)),
 );
 
-it.effect("merge-back rejects a second fork's context until the first is consumed", () =>
+it.effect("a pending merge-back blocks another fork's merge-back and a fresh send", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const parentId = ThreadId.make("merge-back-guard-parent");
@@ -1394,6 +1395,21 @@ it.effect("merge-back rejects a second fork's context until the first is consume
       createdBy: "user",
       creationSource: "web",
     });
+    const fresh = yield* orchestrator
+      .dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("merge-back-guard-fresh-send"),
+        threadId: parentId,
+        messageId: MessageId.make("merge-back-guard-fresh-message"),
+        text: "Start over",
+        attachments: [],
+        freshContext: true,
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      })
+      .pipe(Effect.flip);
+    assert.include(String(fresh.cause), "A fresh session can't start while a fork or merge");
 
     const parent = yield* orchestrator.getThreadProjection(parentId);
     assert.deepEqual(
@@ -1405,6 +1421,177 @@ it.effect("merge-back rejects a second fork's context until the first is consume
         [first.threadId, "pending"],
       ],
     );
+  }).pipe(Effect.provide(forkCases[0]!.layer)),
+);
+
+// A stable parent run forks natively, so the fork's transfer stays pending until a turn starts.
+const forkFinishedParent = (key: string, sideChat = false) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const parentId = ThreadId.make(`${key}-parent`);
+    const parentRunId = RunId.make(`${key}-parent-run`);
+    const forkId = ThreadId.make(`${key}-fork`);
+    yield* createParent(parentId);
+    yield* writeParentRun({
+      threadId: parentId,
+      runId: parentRunId,
+      ordinal: 1,
+      status: "completed",
+      text: "Parent work",
+      stable: true,
+    });
+    yield* orchestrator.dispatch({
+      type: "thread.fork",
+      commandId: CommandId.make(`${key}-fork`),
+      sourceThreadId: parentId,
+      targetThreadId: forkId,
+      sourcePoint: { type: "run", runId: parentRunId },
+      ...(sideChat ? { sideChat: true } : {}),
+      createdBy: "user",
+      creationSource: "web",
+    });
+    return forkId;
+  });
+
+it.effect.each([
+  {
+    name: "a fresh send in an unsent fork starts without the fork's context",
+    key: "user",
+    scheduled: false,
+    sideChat: false,
+    refused: false,
+  },
+  {
+    name: "a scheduled fresh run in an unsent fork is refused and leaves the fork pending",
+    key: "scheduled",
+    scheduled: true,
+    sideChat: false,
+    refused: true,
+  },
+  {
+    name: "a fresh send in a side chat that hasn't run is refused and leaves the fork pending",
+    key: "side-chat",
+    scheduled: false,
+    sideChat: true,
+    refused: true,
+  },
+] as const)("$name", ({ key: row, scheduled, sideChat, refused }) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const key = `fresh-${row}`;
+    const forkId = yield* forkFinishedParent(key, sideChat);
+    const messageId = MessageId.make(`${key}-message`);
+    const send = orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make(`${key}-send`),
+      threadId: forkId,
+      messageId,
+      text: "Start over",
+      attachments: [],
+      freshContext: true,
+      dispatchMode: { type: "start_immediately" },
+      createdBy: "user",
+      creationSource: "web",
+      ...(scheduled ? { scheduledTaskId: ScheduledTaskId.make(`${key}-task`) } : {}),
+    });
+    if (refused) {
+      const error = yield* Effect.flip(send);
+      assert.include(String(error.cause), "A fresh session can't start while a fork or merge");
+    } else {
+      yield* send;
+    }
+
+    const projection = yield* orchestrator.getThreadProjection(forkId);
+    assert.deepEqual(
+      projection.contextTransfers.map((transfer) => [transfer.type, transfer.status]),
+      [["fork", refused ? "pending" : "superseded"]],
+    );
+    if (refused) return;
+    const run = projection.runs.find((candidate) => candidate.userMessageId === messageId);
+    assert.isTrue(run?.freshContext);
+    // The fork path would have forked the parent's native session into this thread.
+    assert.isNull(
+      projection.providerThreads.find((thread) => thread.id === run?.providerThreadId)?.forkedFrom,
+    );
+  }).pipe(Effect.provide(forkCases[0]!.layer)),
+);
+
+it.effect.each([
+  {
+    name: "a fresh send queued behind a fork's failed first run drops the fork's context",
+    key: "user",
+    scheduled: false,
+    sideChat: false,
+    superseded: true,
+  },
+  {
+    name: "a scheduled fresh run queued behind a fork's failed first run keeps the fork pending",
+    key: "scheduled",
+    scheduled: true,
+    sideChat: false,
+    superseded: false,
+  },
+  // The fresh run still gets the side chat's digest of the parent. Dropping it is a separate fix.
+  {
+    name: "a fresh send queued behind a side chat's failed first run keeps the fork pending",
+    key: "side-chat",
+    scheduled: false,
+    sideChat: true,
+    superseded: false,
+  },
+] as const)("$name", ({ key: row, scheduled, sideChat, superseded }) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const eventSink = yield* EventSink.EventSinkV2;
+    const key = `queued-fresh-${row}`;
+    const forkId = yield* forkFinishedParent(key, sideChat);
+    const send = (name: string, fresh: boolean) =>
+      orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(`${key}-${name}`),
+        threadId: forkId,
+        messageId: MessageId.make(`${key}-${name}`),
+        text: name,
+        attachments: [],
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "user",
+        creationSource: "web",
+        ...(fresh ? { freshContext: true } : {}),
+        ...(fresh && scheduled ? { scheduledTaskId: ScheduledTaskId.make(`${key}-task`) } : {}),
+      });
+    yield* send("first", false);
+    yield* send("fresh", true);
+    // The first run fails before its provider forks the parent's session.
+    const first = (yield* orchestrator.getThreadProjection(forkId)).runs[0]!;
+    const now = yield* DateTime.now;
+    yield* eventSink.write({
+      events: [
+        {
+          id: EventId.make(`${key}-first-failed`),
+          type: "run.updated",
+          threadId: forkId,
+          runId: first.id,
+          occurredAt: now,
+          payload: { ...first, status: "failed", completedAt: now },
+        },
+      ],
+    });
+    yield* orchestrator.dispatch({
+      type: "queue.resume",
+      commandId: CommandId.make(`${key}-resume`),
+      threadId: forkId,
+    });
+
+    const projection = yield* orchestrator.getThreadProjection(forkId);
+    assert.deepEqual(
+      projection.contextTransfers.map((transfer) => [transfer.type, transfer.status]),
+      [["fork", superseded ? "superseded" : "pending"]],
+    );
+    const fresh = projection.runs.find(
+      (run) => run.userMessageId === MessageId.make(`${key}-fresh`),
+    );
+    assert.equal(fresh?.status, "starting");
+    assert.isTrue(fresh?.freshContext);
   }).pipe(Effect.provide(forkCases[0]!.layer)),
 );
 
