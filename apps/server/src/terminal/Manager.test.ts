@@ -1776,6 +1776,37 @@ it.layer(
     }),
   );
 
+  it.effect.each([
+    // The shell's cursor-position query, which history drops.
+    { name: "a query", head: "before\u001b[6", tail: "nafter", history: "after" },
+    // History keeps a colour change for the output that follows it.
+    {
+      name: "a colour change",
+      head: "before\u001b[31",
+      tail: "mafter",
+      history: "\u001b[31mafter",
+    },
+  ])(
+    "keeps a control sequence whole in history when a clear splits it ($name)",
+    ({ head, tail, history }) =>
+      Effect.gen(function* () {
+        const { manager, ptyAdapter } = yield* createManager();
+        yield* manager.open(openInput());
+        const process = ptyAdapter.processes[0]!;
+
+        process.emitData(head);
+        yield* manager.clear({ threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID });
+        process.emitData(tail);
+
+        const observed: TerminalAttachStreamEvent[] = [];
+        const stopObserving = yield* manager.observeStream(openInput(), (event) =>
+          Effect.sync(() => observed.push(event)),
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(stopObserving));
+        expect(observed[0]).toMatchObject({ type: "snapshot", snapshot: { history } });
+      }),
+  );
+
   it.effect("keeps a decoded U+009C inside a stripped OSC query out of history", () =>
     Effect.gen(function* () {
       const { manager, ptyAdapter } = yield* createManager();
