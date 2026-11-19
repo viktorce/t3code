@@ -8,6 +8,7 @@ import {
   TerminalError,
   TerminalOpenInput,
   TerminalProviderEnvironmentError,
+  unfinishedTerminalSequence,
 } from "./terminal.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
@@ -69,5 +70,21 @@ describe("chunkTerminalWrite", () => {
     expect(chunks[0]).toHaveLength(TERMINAL_WRITE_MAX_LENGTH - 1);
     expect(chunks[1]).toBe("😀tail");
     expect(chunks.join("")).toBe(data);
+  });
+});
+
+describe("unfinishedTerminalSequence", () => {
+  it.each([
+    { name: "a query after a finished colour change", text: "a\x1b[31mb\x1b[6", open: "\x1b[6" },
+    { name: "text after a finished sequence", text: "a\x1b[31mb", open: "" },
+    { name: "text with no ESC", text: "]abc", open: "" },
+    { name: "an ESC alone", text: "ab\x1b", open: "\x1b" },
+    // A terminal runs these controls when they arrive, so they are not sent again.
+    { name: "a CSI holding a space and a line feed", text: "\x1b[2 \n", open: "\x1b[2 " },
+    { name: "an escape holding a tab and a backspace", text: "\x1b\t(\b", open: "\x1b(" },
+    { name: "a title string holding a line feed", text: "\x1b]0;a\nb", open: "\x1b]0;a\nb" },
+    { name: "an ended title string", text: "\x1b]0;a\x07", open: "" },
+  ])("returns the open sequence after $name", ({ text, open }) => {
+    expect(unfinishedTerminalSequence(text)).toBe(open);
   });
 });

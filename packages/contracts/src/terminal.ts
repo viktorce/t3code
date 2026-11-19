@@ -98,6 +98,30 @@ export function terminalSequenceEnd(state: number, text: string): number {
 }
 
 /**
+ * The unfinished control sequence `text` ends in, as text that takes a terminal in ground state
+ * back to the same point, or "" when `text` ends outside a sequence or lacks that sequence's ESC.
+ * It leaves out the C0 controls inside an escape or CSI sequence, which a terminal runs on arrival.
+ */
+export function unfinishedTerminalSequence(text: string): string {
+  const escape = text.lastIndexOf("\u001b");
+  if (escape < 0) return "";
+  const kept: string[] = [];
+  let keptStart = escape;
+  let state = SEQUENCE_ESCAPE;
+  for (let index = escape + 1; index < text.length; index += 1) {
+    const unit = text.charCodeAt(index);
+    if (unit < 0x20 && (state & 7) <= SEQUENCE_CSI) {
+      kept.push(text.slice(keptStart, index));
+      keptStart = index + 1;
+    }
+    state = nextTerminalSequenceState(state, unit);
+    if (state === TERMINAL_SEQUENCE_GROUND) return "";
+  }
+  kept.push(text.slice(keptStart));
+  return kept.join("");
+}
+
+/**
  * The final `maxBytes` of UTF-8 a client retains, starting at a code point boundary and
  * outside any control sequence the cut went through.
  */

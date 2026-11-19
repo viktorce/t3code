@@ -534,6 +534,45 @@ describe("GhosttyTerminalCore snapshots", () => {
 
     expect(modes()).toEqual(live);
   });
+
+  it.each([
+    // The shell's cursor-position query, ESC[6n.
+    { name: "a query", start: "\x1b[6", rest: "n" },
+    // A window title, which runs until its BEL.
+    { name: "a title string", start: "\x1b]0;ti", rest: "tle\x07" },
+  ])("completes a control sequence that a clear splits ($name)", async ({ start, rest }) => {
+    const replies: string[] = [];
+    const referenceReplies: string[] = [];
+    const [core, reference] = await Promise.all([
+      createCore((data) => replies.push(data)),
+      createCore((data) => referenceReplies.push(data)),
+    ]);
+    let state = createSession("");
+    const initial = readTerminalOutputUpdate(state.output, INITIAL_TERMINAL_OUTPUT_CURSOR);
+    writeTerminalOutputUpdate(core, initial);
+    let cursor = initial.cursor;
+    const apply = (next: TerminalBufferState) => {
+      state = next;
+      const update = readTerminalOutputUpdate(state.output, cursor);
+      writeTerminalOutputUpdate(core, update);
+      cursor = update.cursor;
+    };
+
+    apply(append(state, `before${start}`));
+    apply(
+      applyTerminalAttachStreamEvent(state, {
+        type: "cleared",
+        threadId: "terminal-stream-test",
+        terminalId: "term-1",
+      }),
+    );
+    apply(append(state, `${rest}after`));
+
+    // An empty screen that got the sequence in one piece.
+    reference.write(`${start}${rest}after`);
+    expect(core.snapshot()).toEqual(reference.snapshot());
+    expect(replies).toEqual(referenceReplies);
+  });
 });
 
 describe("GhosttyTerminalCore scrollback", () => {
