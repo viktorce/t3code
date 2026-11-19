@@ -649,6 +649,7 @@
     "@t3tools/shared": "workspace:*",
     "@t3tools/source-control-core": "workspace:*",
     "@t3tools/source-control-definitions": "workspace:*",
+    "@xstate/effect": "1.0.0-beta.2",
     "effect": "catalog:",
     "gt-i18n": "1.0.40",
     "jszip": "3.10.1",
@@ -656,7 +657,8 @@
     "remark-parse": "catalog:",
     "three": "0.180.0",
     "unbash": "^5.0.0",
-    "unified": "catalog:"
+    "unified": "catalog:",
+    "xstate": "6.0.0-beta.3"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",

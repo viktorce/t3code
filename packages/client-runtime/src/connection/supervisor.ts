@@ -15,7 +15,8 @@ import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import * as Tracer from "effect/Tracer";
+import type * as Tracer from "effect/Tracer";
+import { createEffectActor, createEffectLogic } from "@xstate/effect";
 
 import type { ConnectionCatalogEntry, ConnectionRoute } from "./catalog.ts";
 import * as Connectivity from "./connectivity.ts";
@@ -42,14 +43,19 @@ import {
   insertRoute,
   type ReportedEndpoint,
 } from "./routes.ts";
+import {
+  type AttemptInput,
+  type AttemptOutcome,
+  availableState,
+  connectingState,
+  offlineState,
+  type ParkInput,
+  type PendingRetryTrace,
+  type SupervisorIntent,
+  supervisorMachine,
+  type TracedAttemptFailure,
+} from "./supervisorMachine.ts";
 
-const RETRY_BASE_DELAY_MS = 1_000;
-const RETRY_MAX_DELAY_MS = 300_000;
-const SESSION_LOSS_RETRY_DELAY_MS = 250;
-// Someone is approving this device on the host; check back soon rather than climbing the ladder.
-const APPROVAL_PENDING_RETRY_DELAY_MS = 4_000;
-// A request lives 10 minutes; past that nobody is approving, so a forgotten device backs off.
-const APPROVAL_PENDING_FAST_RETRIES = 150;
 // A cold server with a large database can take longer than 15 seconds to
 // answer, and that is not a reason to drop a working connection.
 const CONNECTION_ESTABLISHMENT_TIMEOUT = "15 seconds";
@@ -80,11 +86,6 @@ const SILENT_ROUTE_BACKOFF_MAX_MS = 1_800_000;
 // tried again for this long, so a flaky LAN cannot bounce the connection.
 const BETTER_ROUTE_COOLDOWN_MS = 300_000;
 
-interface SupervisorIntent {
-  readonly desired: boolean;
-  readonly network: NetworkStatus;
-}
-
 type SupervisorSignal =
   | { readonly _tag: "ConnectRequested" }
   | { readonly _tag: "DisconnectRequested" }
@@ -92,13 +93,6 @@ type SupervisorSignal =
   | { readonly _tag: "NetworkChanged"; readonly network: NetworkStatus }
   | { readonly _tag: "Wakeup"; readonly reason: ConnectionWakeups.ConnectionWakeup }
   | { readonly _tag: "BetterRouteAvailable"; readonly routeId: string };
-
-interface PendingRetryTrace {
-  readonly previousAttempt: Tracer.Span;
-  readonly failureCount: number;
-  readonly delayMs: number;
-  readonly reason: ConnectionAttemptError["reason"];
-}
 
 type ConnectedLease = ConnectionDriver.EnvironmentConnectionLease & {
   readonly activeRoute: ConnectionRoute | undefined;
@@ -115,25 +109,6 @@ function mergeRefusedRoutes(
     ? known
     : next;
 }
-
-interface TracedAttemptFailure {
-  readonly error: ConnectionAttemptError;
-  readonly attemptSpan: Option.Option<Tracer.Span>;
-}
-
-type AttemptOutcome =
-  | {
-      readonly _tag: "Interrupted";
-      readonly established: boolean;
-      readonly stable: boolean;
-      readonly resetRetry: boolean;
-    }
-  | {
-      readonly _tag: "Failure";
-      readonly established: boolean;
-      readonly stable: boolean;
-      readonly failure: TracedAttemptFailure;
-    };
 
 type EstablishmentEvent =
   | {
@@ -167,11 +142,6 @@ export interface EnvironmentSupervisorOptions {
   }) => Effect.Effect<Option.Option<ConnectionCatalogEntry>>;
 }
 
-function retryDelayMs(failureCount: number, random: number): number {
-  const ceiling = Math.min(RETRY_MAX_DELAY_MS, RETRY_BASE_DELAY_MS * 2 ** (failureCount + 1));
-  return Math.round(ceiling / 2 + (ceiling / 2) * random);
-}
-
 interface SilentRoute {
   readonly failures: number;
   readonly until: bigint;
@@ -192,59 +162,6 @@ function annotateTarget(target: ConnectionTarget) {
     "environment.label": target.label,
     "environment.target.kind": target._tag,
   });
-}
-
-function availableState(intent: SupervisorIntent, generation: number): SupervisorConnectionState {
-  return {
-    desired: false,
-    network: intent.network,
-    phase: "available",
-    stage: null,
-    attempt: 0,
-    generation,
-    lastFailure: null,
-    retryAt: null,
-    refusedRouteIds: NO_REFUSED_ROUTES,
-  };
-}
-
-function offlineState(
-  intent: SupervisorIntent,
-  generation: number,
-  attempt: number,
-  lastFailure: ConnectionAttemptError | null,
-): SupervisorConnectionState {
-  return {
-    desired: true,
-    network: intent.network,
-    phase: "offline",
-    stage: null,
-    attempt,
-    generation,
-    lastFailure,
-    retryAt: null,
-    refusedRouteIds: NO_REFUSED_ROUTES,
-  };
-}
-
-function connectingState(
-  intent: SupervisorIntent,
-  generation: number,
-  attempt: number,
-  lastFailure: ConnectionAttemptError | null,
-  stage: SupervisorConnectionState["stage"] = "preparing",
-): SupervisorConnectionState {
-  return {
-    desired: true,
-    network: intent.network,
-    phase: "connecting",
-    stage,
-    attempt,
-    generation,
-    lastFailure,
-    retryAt: null,
-    refusedRouteIds: NO_REFUSED_ROUTES,
-  };
 }
 
 function failureFromExit<A>(
@@ -1150,29 +1067,6 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     return outcome;
   }, Effect.ensuring(clearLease));
 
-  const waitForRetrySignal = Effect.fnUntraced(function* (delayMs: number) {
-    // @effect-diagnostics-next-line raceFirstWithSleepToTimeout:off - the sleep is the retry delay (false), not a timeout around the signal loop
-    return yield* Effect.raceFirst(
-      Effect.sleep(delayMs).pipe(Effect.as(false)),
-      Effect.gen(function* () {
-        for (;;) {
-          const next = yield* Queue.take(signals);
-          switch (next._tag) {
-            case "Wakeup":
-              return ConnectionWakeups.resetsRetryBackoff(next.reason);
-            case "ConnectRequested":
-            case "DisconnectRequested":
-            case "RetryRequested":
-            case "NetworkChanged":
-              return false;
-            case "BetterRouteAvailable":
-              break;
-          }
-        }
-      }),
-    );
-  });
-
   const waitForSignal = Queue.take(signals).pipe(
     Effect.repeat({ while: (next) => next._tag === "BetterRouteAvailable" }),
     Effect.map(
@@ -1180,151 +1074,54 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     ),
   );
 
-  const run = Effect.fnUntraced(function* () {
-    let failureCount = 0;
-    // Approval waits count as attempts but not toward backoff, so a later outage starts low.
-    let backoffFailures = 0;
-    let approvalWaits = 0;
-    let generation = 0;
-    let latestFailure: ConnectionAttemptError | null = null;
-    let pendingRetry = Option.none<PendingRetryTrace>();
-    const resetRetryLadder = () => {
-      failureCount = 0;
-      backoffFailures = 0;
-      approvalWaits = 0;
-      pendingRetry = Option.none();
-    };
-    let replacing = false;
-
-    for (;;) {
-      const retryRequested = yield* Ref.getAndSet(resetRetryState, false);
-      if (retryRequested) {
-        failureCount = 0;
-        backoffFailures = 0;
-        approvalWaits = 0;
-        latestFailure = null;
-        pendingRetry = Option.none();
-      }
-      const currentIntent = yield* Ref.get(intent);
-      if (!currentIntent.desired) {
-        resetRetryLadder();
-        latestFailure = null;
-        yield* clearLease;
-        yield* setState(availableState(currentIntent, generation));
-        yield* waitForSignal;
-        continue;
-      }
-      // The platform's offline report can stay wrong after the network is back,
-      // so an explicit retry still tries instead of waiting for it to change.
-      const ignoreOffline = replacing || retryRequested;
-      if (currentIntent.network === "offline" && !ignoreOffline) {
-        yield* clearLease;
-        yield* setState(offlineState(currentIntent, generation, failureCount + 1, latestFailure));
-        const applicationActivated = yield* waitForSignal;
-        if (applicationActivated) {
-          resetRetryLadder();
-        }
-        continue;
-      }
-
-      const attempt = failureCount + 1;
-      const nextGeneration = generation + 1;
-      const outcome: AttemptOutcome = yield* Effect.scoped(
-        runAttempt(attempt, nextGeneration, latestFailure, pendingRetry, ignoreOffline),
-      );
-      replacing = false;
-      const failedProbe = yield* Ref.getAndSet(probeUnanswered, false);
-      if (outcome.established) {
-        generation = nextGeneration;
-        // A session came up, so no earlier failure describes the connection.
-        // Losing a live session is not a failed connection either, for example
-        // a socket the OS killed while the app was suspended: its replacement
-        // reports no failure until it fails itself.
-        latestFailure = null;
-        if (outcome.stable) {
-          resetRetryLadder();
-        }
-      }
-      if (outcome._tag === "Interrupted") {
-        if (outcome.resetRetry) {
-          resetRetryLadder();
-          replacing = true;
-        }
-        continue;
-      }
-
-      const attemptSpan: Option.Option<Tracer.Span> = outcome.failure.attemptSpan;
-      const error: ConnectionAttemptError = outcome.failure.error;
-      if (!outcome.established) {
-        latestFailure = error;
-      }
-      if (error._tag === "ConnectionBlockedError") {
-        const blockedIntent = yield* Ref.get(intent);
-        yield* setState({
-          desired: blockedIntent.desired,
-          network: blockedIntent.network,
-          phase: "blocked",
-          stage: null,
-          attempt,
-          generation,
-          lastFailure: error,
-          retryAt: null,
-          refusedRouteIds: NO_REFUSED_ROUTES,
-        });
-        const applicationActivated = yield* waitForSignal;
-        if (applicationActivated) {
-          resetRetryLadder();
-        }
-        continue;
-      }
-
-      if (failedProbe) {
-        resetRetryLadder();
-        yield* setState(connectingState(yield* Ref.get(intent), generation, 1, latestFailure));
-        continue;
-      }
-
-      // The first loss of a live session retries almost at once; the ladder
-      // still counts it, so a host that keeps dropping sessions backs off.
-      const firstLoss = outcome.established && failureCount === 0;
-      failureCount += 1;
-      if (error.reason === "approval-pending") approvalWaits += 1;
-      const awaitingApproval =
-        error.reason === "approval-pending" && approvalWaits <= APPROVAL_PENDING_FAST_RETRIES;
-      if (!awaitingApproval) backoffFailures += 1;
-      const delayMs = awaitingApproval
-        ? APPROVAL_PENDING_RETRY_DELAY_MS
-        : firstLoss
-          ? Math.round(SESSION_LOSS_RETRY_DELAY_MS * (0.5 + (yield* Random.next) / 2))
-          : error.reason === "approval-pending"
-            ? Math.max(
-                APPROVAL_PENDING_RETRY_DELAY_MS,
-                retryDelayMs(backoffFailures - 1, yield* Random.next),
-              )
-            : retryDelayMs(backoffFailures - 1, yield* Random.next);
-      pendingRetry = Option.map(attemptSpan, (previousAttempt) => ({
-        previousAttempt,
-        failureCount,
-        delayMs,
-        reason: error.reason,
-      }));
-      const failedIntent = yield* Ref.get(intent);
-      yield* setState({
-        desired: failedIntent.desired,
-        network: failedIntent.network,
-        phase: "backoff",
-        stage: null,
-        attempt,
-        generation,
-        lastFailure: latestFailure,
-        retryAt: (yield* Clock.currentTimeMillis) + delayMs,
-        refusedRouteIds: NO_REFUSED_ROUTES,
-      });
-      const applicationActivated = yield* waitForRetrySignal(delayMs);
-      if (applicationActivated) {
-        resetRetryLadder();
-      }
-    }
+  const runMachine = supervisorMachine.provide({
+    actors: {
+      readIntent: createEffectLogic({
+        effect: Effect.gen(function* () {
+          const retryRequested = yield* Ref.getAndSet(resetRetryState, false);
+          return { retryRequested, intent: yield* Ref.get(intent) };
+        }),
+      }),
+      attempt: createEffectLogic(({ input }: { readonly input: AttemptInput }) =>
+        Effect.gen(function* () {
+          const outcome = yield* Effect.scoped(
+            runAttempt(
+              input.attempt,
+              input.generation,
+              input.lastFailure,
+              input.pendingRetry,
+              input.ignoreOffline,
+            ),
+          );
+          const failedProbe = yield* Ref.getAndSet(probeUnanswered, false);
+          return {
+            input,
+            outcome,
+            failedProbe,
+            intent: yield* Ref.get(intent),
+            random: yield* Random.next,
+            now: yield* Clock.currentTimeMillis,
+          };
+        }),
+      ),
+      park: createEffectLogic(({ input }: { readonly input: ParkInput }) =>
+        (input.clearLease ? clearLease : Effect.void).pipe(
+          Effect.andThen(setState(input.state)),
+          Effect.andThen(
+            input.retryDelayMs === null
+              ? waitForSignal
+              : // @effect-diagnostics-next-line raceFirstWithSleepToTimeout:off - the sleep is the retry delay (false), not a timeout around the signal wait
+                Effect.raceFirst(
+                  Effect.sleep(input.retryDelayMs).pipe(Effect.as(false)),
+                  waitForSignal,
+                ),
+          ),
+        ),
+      ),
+      publish: createEffectLogic(({ input }: { readonly input: SupervisorConnectionState }) =>
+        setState(input),
+      ),
+    },
   });
 
   yield* connectivity.changes.pipe(
@@ -1362,7 +1159,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     Effect.forever,
     Effect.forkScoped,
   );
-  yield* run().pipe(Effect.forkScoped);
+  yield* createEffectActor(runMachine);
 
   const connect = Ref.update(intent, (current) => ({
     ...current,
