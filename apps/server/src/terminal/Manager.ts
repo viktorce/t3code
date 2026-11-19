@@ -2581,10 +2581,8 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   ) {
     while (true) {
       const action: DrainProcessEventAction = yield* Effect.sync(() => {
+        // Whatever ended this process reset the queue and drain flag. A replacement may own both.
         if (session.pid !== expectedPid || !session.process || session.status !== "running") {
-          session.pendingProcessEvents = [];
-          session.pendingProcessEventIndex = 0;
-          session.processEventDrainRunning = false;
           return { type: "idle" } as const;
         }
 
