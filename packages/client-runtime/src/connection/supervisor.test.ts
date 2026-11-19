@@ -781,11 +781,13 @@ describe("EnvironmentSupervisor", () => {
         connectionId: "ssh-connection-2",
       });
       const firstRouteFailure = transient("The first SSH route dropped while synchronizing.");
+      const secondPrepareStarted = yield* Deferred.make<void>();
       const harness = yield* makeHarness({
         prepare: (attempt, target) =>
           attempt === 1
             ? Effect.succeed(preparedFor(target))
-            : Effect.sleep("4 minutes").pipe(
+            : Deferred.succeed(secondPrepareStarted, undefined).pipe(
+                Effect.andThen(Effect.sleep("4 minutes")),
                 Effect.andThen(
                   Effect.fail(
                     new ConnectionTransientError({
@@ -810,6 +812,7 @@ describe("EnvironmentSupervisor", () => {
         supervisor.state,
         (state) => state.phase === "backoff",
       ).pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(secondPrepareStarted);
       yield* TestClock.adjust("4 minutes");
 
       // The driver reports the first transient failure across its routes.
@@ -2605,7 +2608,7 @@ describe("EnvironmentSupervisor routes", () => {
         if (discovery === "withdrawn-upgrade") {
           yield* Deferred.await(discoveryProcessed);
           yield* TestClock.adjust("60 seconds");
-          expect((yield* SubscriptionRef.get(supervisor.state)).generation).toBe(2);
+          yield* awaitState(supervisor.state, (state) => state.generation === 2);
           return;
         }
         if (discovery === "withdrawn" || discovery === "omitted") {
