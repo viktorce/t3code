@@ -1107,7 +1107,15 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
       park: createEffectLogic(({ input }: { readonly input: ParkInput }) =>
         (input.clearLease ? clearLease : Effect.void).pipe(
           Effect.andThen(setState(input.state)),
-          Effect.andThen(waitForSignal),
+          Effect.andThen(
+            input.retryDelayMs === null
+              ? waitForSignal
+              : // @effect-diagnostics-next-line raceFirstWithSleepToTimeout:off - the sleep is the retry delay (false), not a timeout around the signal wait
+                Effect.raceFirst(
+                  Effect.sleep(input.retryDelayMs).pipe(Effect.as(false)),
+                  waitForSignal,
+                ),
+          ),
         ),
       ),
       publish: createEffectLogic(({ input }: { readonly input: SupervisorConnectionState }) =>

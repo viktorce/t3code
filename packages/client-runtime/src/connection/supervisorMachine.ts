@@ -77,6 +77,8 @@ export interface IntentReading {
 export interface ParkInput {
   readonly state: SupervisorConnectionState;
   readonly clearLease: boolean;
+  // Raced inside the actor: a machine timer fires through a mailbox hop that can swallow a signal.
+  readonly retryDelayMs: number | null;
 }
 
 function retryDelayMs(failureCount: number, random: number): number {
@@ -170,7 +172,7 @@ const readIntent = createEffectLogic<IntentReading>({ effect: unprovided("readIn
 const attempt = createEffectLogic<AttemptResult, never, AttemptInput>({
   effect: () => unprovided("attempt"),
 });
-// Publishes the state, then waits for a signal; true when it resets the backoff.
+// Publishes the state, then waits for a signal or the retry delay; true when a signal resets the backoff.
 const park = createEffectLogic<boolean, never, ParkInput>({ effect: () => unprovided("park") });
 const publish = createEffectLogic<void, never, SupervisorConnectionState>({
   effect: () => unprovided("publish"),
@@ -253,7 +255,7 @@ export const supervisorMachine = setupEffect({
       invoke: {
         id: "park",
         src: "park",
-        input: ({ input }) => ({ state: input.state, clearLease: true }),
+        input: ({ input }) => ({ state: input.state, clearLease: true, retryDelayMs: null }),
         onDone: { target: "deciding" },
       },
     },
@@ -261,7 +263,7 @@ export const supervisorMachine = setupEffect({
       invoke: {
         id: "park",
         src: "park",
-        input: ({ input }) => ({ state: input.state, clearLease: true }),
+        input: ({ input }) => ({ state: input.state, clearLease: true, retryDelayMs: null }),
         onDone: ({ context, event }) => ({
           target: "deciding",
           context: event.output ? resetLadder(context) : context,
@@ -272,7 +274,7 @@ export const supervisorMachine = setupEffect({
       invoke: {
         id: "park",
         src: "park",
-        input: ({ input }) => ({ state: input.state, clearLease: false }),
+        input: ({ input }) => ({ state: input.state, clearLease: false, retryDelayMs: null }),
         onDone: ({ context, event }) => ({
           target: "deciding",
           context: event.output ? resetLadder(context) : context,
@@ -288,12 +290,14 @@ export const supervisorMachine = setupEffect({
       },
     },
     backoff: {
-      timeout: ({ input }) => input.delayMs,
-      onTimeout: { target: "deciding" },
       invoke: {
         id: "park",
         src: "park",
-        input: ({ input }) => ({ state: input.state, clearLease: false }),
+        input: ({ input }) => ({
+          state: input.state,
+          clearLease: false,
+          retryDelayMs: input.delayMs,
+        }),
         onDone: ({ context, event }) => ({
           target: "deciding",
           context: event.output ? resetLadder(context) : context,
