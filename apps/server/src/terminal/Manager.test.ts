@@ -1346,6 +1346,76 @@ it.layer(
     }),
   );
 
+  it.effect.each([
+    {
+      label: "an exit queued before the clear",
+      queuedBeforeClear: true,
+      expected: ["busy", "queued", "exited"],
+      snapshot: { history: "queued", status: "exited" },
+    },
+    {
+      label: "output printed after the clear",
+      queuedBeforeClear: false,
+      expected: ["busy", "after", "barrier"],
+      snapshot: { history: "afterbarrier", status: "running" },
+    },
+  ])(
+    "keeps queued process events and their order across a clear ($label)",
+    ({ queuedBeforeClear, expected, snapshot }) =>
+      Effect.gen(function* () {
+        const { manager, ptyAdapter } = yield* createManager();
+        yield* manager.open(openInput());
+        const process = ptyAdapter.processes[0]!;
+        const reached = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const drained = yield* Deferred.make<void>();
+        yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined));
+        // This earlier fanout listener holds the drain inside the "busy" delivery.
+        const unsubscribeSlow = yield* manager.subscribe((event) =>
+          event.type === "output" && event.data === "busy"
+            ? Deferred.succeed(reached, undefined).pipe(Effect.andThen(Deferred.await(release)))
+            : Effect.void,
+        );
+        const seen: string[] = [];
+        const unsubscribeSeen = yield* manager.subscribe((event) =>
+          Effect.gen(function* () {
+            if (event.type !== "output" && event.type !== "exited") return;
+            const entry = event.type === "output" ? event.data : "exited";
+            seen.push(entry);
+            if (entry === "exited" || entry === "barrier")
+              yield* Deferred.succeed(drained, undefined);
+          }),
+        );
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            unsubscribeSlow();
+            unsubscribeSeen();
+          }),
+        );
+
+        process.emitData("busy");
+        yield* Deferred.await(reached);
+        if (queuedBeforeClear) {
+          process.emitData("queued");
+          process.emitExit({ exitCode: 3, signal: 0 });
+        }
+        yield* manager.clear({ threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID });
+        if (!queuedBeforeClear) process.emitData("after");
+        yield* Deferred.succeed(release, undefined);
+        // Without a reported exit this chunk ends the wait. After one, the manager drops it.
+        process.emitData("barrier");
+        yield* Deferred.await(drained);
+        const observed: TerminalAttachStreamEvent[] = [];
+        const stopObserving = yield* manager.observeStream(openInput(), (event) =>
+          Effect.sync(() => observed.push(event)),
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(stopObserving));
+
+        expect(seen).toEqual(expected);
+        expect(observed[0]).toMatchObject({ type: "snapshot", snapshot });
+      }),
+  );
+
   it.effect("restores a log tail that starts inside a control sequence without its remainder", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
