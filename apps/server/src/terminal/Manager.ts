@@ -63,6 +63,7 @@ import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
@@ -242,6 +243,11 @@ export class TerminalManager extends Context.Service<
       readonly terminalId?: string;
     }) => Effect.Effect<void>;
 
+    /**
+     * A listener must not wait on a call that takes the thread's terminal lock, such as
+     * `clear`, `open` or `close`. Clear holds that lock until the current delivery reaches
+     * every listener, so the two would deadlock.
+     */
     readonly subscribe: (
       listener: (event: TerminalEvent) => Effect.Effect<void>,
       registerCleanup?: (stop: () => void) => void,
@@ -309,6 +315,10 @@ interface TerminalSessionState {
   pendingProcessEvents: Array<PendingProcessEvent | undefined>;
   pendingProcessEventIndex: number;
   processEventDrainRunning: boolean;
+  // Held from stamping an event until every listener has it, so process events and
+  // `cleared` arrive in sequence order. Each shell gets its own, so a delivery still
+  // under way for a replaced shell cannot hold up the next shell's events.
+  deliveryLock: Semaphore.Semaphore;
   exitCode: number | null;
   exitSignal: number | null;
   updatedAt: string;
@@ -2579,7 +2589,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     session: TerminalSessionState,
     expectedPid: number,
   ) {
-    while (true) {
+    const deliverNext = Effect.gen(function* () {
       const action: DrainProcessEventAction = yield* Effect.sync(() => {
         if (session.pid !== expectedPid || !session.process || session.status !== "running") {
           session.pendingProcessEvents = [];
@@ -2657,7 +2667,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       });
 
       if (action.type === "idle") {
-        return;
+        return false;
       }
 
       if (action.type === "output") {
@@ -2672,7 +2682,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           sequence: action.sequence,
           data: action.data,
         });
-        continue;
+        return true;
       }
 
       yield* clearKillFiber(action.process);
@@ -2689,8 +2699,11 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         exitSignal: action.exitSignal,
       });
       yield* evictInactiveSessionsIfNeeded();
-      return;
-    }
+      return false;
+    });
+    const deliveryLock = session.deliveryLock;
+    let more = true;
+    while (more) more = yield* deliveryLock.withPermit(deliverNext);
   });
 
   const stopProcess = Effect.fn("terminal.stopProcess")(function* (session: TerminalSessionState) {
@@ -2916,6 +2929,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             };
             yield* modifyManagerState((state) => {
               session.process = ptyProcess;
+              session.deliveryLock = Semaphore.makeUnsafe(1);
               session.shell = spawnResult.shell;
               session.pid = processPid;
               session.status = "running";
@@ -3290,6 +3304,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         pendingProcessEvents: [],
         pendingProcessEventIndex: 0,
         processEventDrainRunning: false,
+        deliveryLock: Semaphore.makeUnsafe(1),
         exitCode: null,
         exitSignal: null,
         updatedAt: yield* nowIso,
@@ -3836,6 +3851,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       Effect.gen(function* () {
         const terminalId = input.terminalId;
         const session = yield* requireSession(input.threadId, terminalId);
+        yield* session.deliveryLock.takeScoped(1);
         session.history.clear();
         session.pendingHistoryControlSequence = "";
         const eventStamp = advanceEventSequence(session);
@@ -3851,7 +3867,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           terminalId,
           sequence: eventStamp.sequence,
         });
-      }),
+      }).pipe(Effect.scoped),
     );
 
   const close: TerminalManager["Service"]["close"] = (input) =>
