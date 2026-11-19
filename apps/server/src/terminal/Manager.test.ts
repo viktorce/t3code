@@ -1349,19 +1349,28 @@ it.layer(
   it.effect.each([
     {
       label: "an exit queued before the clear",
+      held: "busy",
       queuedBeforeClear: true,
-      expected: ["busy", "queued", "exited"],
+      expected: ["2 busy", "3 cleared", "4 queued", "5 exited"],
       snapshot: { history: "queued", status: "exited" },
     },
     {
-      label: "output printed after the clear",
+      label: "output printed while the clear waits",
+      held: "busy",
       queuedBeforeClear: false,
-      expected: ["busy", "after", "barrier"],
+      expected: ["2 busy", "3 cleared", "4 after", "5 barrier"],
+      snapshot: { history: "afterbarrier", status: "running" },
+    },
+    {
+      label: "output printed while the clear is delivered",
+      held: "cleared",
+      queuedBeforeClear: false,
+      expected: ["2 cleared", "3 after", "4 barrier"],
       snapshot: { history: "afterbarrier", status: "running" },
     },
   ])(
-    "keeps queued process events and their order across a clear ($label)",
-    ({ queuedBeforeClear, expected, snapshot }) =>
+    "delivers a clear and the process events around it in sequence order ($label)",
+    ({ held, queuedBeforeClear, expected, snapshot }) =>
       Effect.gen(function* () {
         const { manager, ptyAdapter } = yield* createManager();
         yield* manager.open(openInput());
@@ -1370,18 +1379,20 @@ it.layer(
         const release = yield* Deferred.make<void>();
         const drained = yield* Deferred.make<void>();
         yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined));
-        // This earlier fanout listener holds the drain inside the "busy" delivery.
+        // This earlier fanout listener holds the `held` delivery open.
         const unsubscribeSlow = yield* manager.subscribe((event) =>
-          event.type === "output" && event.data === "busy"
+          (event.type === "output" ? event.data : event.type) === held
             ? Deferred.succeed(reached, undefined).pipe(Effect.andThen(Deferred.await(release)))
             : Effect.void,
         );
         const seen: string[] = [];
         const unsubscribeSeen = yield* manager.subscribe((event) =>
           Effect.gen(function* () {
-            if (event.type !== "output" && event.type !== "exited") return;
-            const entry = event.type === "output" ? event.data : "exited";
-            seen.push(entry);
+            if (event.type !== "output" && event.type !== "cleared" && event.type !== "exited") {
+              return;
+            }
+            const entry = event.type === "output" ? event.data : event.type;
+            seen.push(`${event.sequence} ${entry}`);
             if (entry === "exited" || entry === "barrier")
               yield* Deferred.succeed(drained, undefined);
           }),
@@ -1393,15 +1404,21 @@ it.layer(
           }),
         );
 
-        process.emitData("busy");
-        yield* Deferred.await(reached);
+        if (held === "busy") {
+          process.emitData("busy");
+          yield* Deferred.await(reached);
+        }
         if (queuedBeforeClear) {
           process.emitData("queued");
           process.emitExit({ exitCode: 3, signal: 0 });
         }
-        yield* manager.clear({ threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID });
+        const clearing = yield* manager
+          .clear({ threadId: "thread-1", terminalId: DEFAULT_TERMINAL_ID })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        if (held === "cleared") yield* Deferred.await(reached);
         if (!queuedBeforeClear) process.emitData("after");
         yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(clearing);
         // Without a reported exit this chunk ends the wait. After one, the manager drops it.
         process.emitData("barrier");
         yield* Deferred.await(drained);
@@ -1414,6 +1431,49 @@ it.layer(
         expect(seen).toEqual(expected);
         expect(observed[0]).toMatchObject({ type: "snapshot", snapshot });
       }),
+  );
+
+  it.effect("delivers a restarted shell's events while the old shell's delivery is held", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager();
+      yield* manager.open(openInput());
+      const oldShell = ptyAdapter.processes[0]!;
+      const reached = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const exited = yield* Deferred.make<void>();
+      yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined));
+      const unsubscribeSlow = yield* manager.subscribe((event) =>
+        event.type === "output" && event.data === "old"
+          ? Deferred.succeed(reached, undefined).pipe(Effect.andThen(Deferred.await(release)))
+          : Effect.void,
+      );
+      const seen: string[] = [];
+      const unsubscribeSeen = yield* manager.subscribe((event) =>
+        Effect.gen(function* () {
+          if (event.type !== "output" && event.type !== "exited") return;
+          seen.push(`${event.sequence} ${event.type === "output" ? event.data : event.type}`);
+          if (event.type === "exited") yield* Deferred.succeed(exited, undefined);
+        }),
+      );
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          unsubscribeSlow();
+          unsubscribeSeen();
+        }),
+      );
+
+      oldShell.emitData("old");
+      yield* Deferred.await(reached);
+      yield* manager.open(openInput({ env: { RESTARTED: "1" } }));
+      const newShell = ptyAdapter.processes[1]!;
+      newShell.emitData("one");
+      newShell.emitData("two");
+      newShell.emitExit({ exitCode: 4, signal: 0 });
+      // A hang here means the new shell's drain waits behind the old shell's held delivery.
+      yield* Deferred.await(exited);
+
+      expect(seen).toEqual(["4 one", "5 two", "6 exited"]);
+    }),
   );
 
   it.effect("restores a log tail that starts inside a control sequence without its remainder", () =>
