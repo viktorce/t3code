@@ -77,7 +77,7 @@ export interface IntentReading {
 export interface ParkInput {
   readonly state: SupervisorConnectionState;
   readonly clearLease: boolean;
-  // Raced inside the actor: a machine timer fires through a mailbox hop that can swallow a signal.
+  // Raced inside the actor: a machine timer can win after the actor has taken a signal, dropping it.
   readonly retryDelayMs: number | null;
 }
 
