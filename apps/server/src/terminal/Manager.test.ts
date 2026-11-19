@@ -2864,6 +2864,67 @@ it.layer(
     }),
   );
 
+  it.effect("keeps a restarted shell's queued exit when the old shell's drain resumes", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager();
+      yield* manager.open(openInput());
+      const makeGate = Effect.all({
+        reached: Deferred.make<void>(),
+        release: Deferred.make<void>(),
+      });
+      const gates = { old: yield* makeGate, new: yield* makeGate };
+      const drained = yield* Deferred.make<void>();
+      yield* Effect.addFinalizer(() =>
+        Effect.all([
+          Deferred.succeed(gates.old.release, undefined),
+          Deferred.succeed(gates.new.release, undefined),
+        ]),
+      );
+      // This earlier fanout listener holds each shell's drain inside one delivery.
+      const unsubscribeSlow = yield* manager.subscribe((event) => {
+        if (event.type !== "output" || (event.data !== "old" && event.data !== "new")) {
+          return Effect.void;
+        }
+        const gate = gates[event.data];
+        return Deferred.succeed(gate.reached, undefined).pipe(
+          Effect.andThen(Deferred.await(gate.release)),
+        );
+      });
+      const seen: string[] = [];
+      const unsubscribeSeen = yield* manager.subscribe((event) =>
+        Effect.gen(function* () {
+          if (event.type !== "output" && event.type !== "exited") return;
+          const entry = event.type === "output" ? event.data : "exited";
+          seen.push(entry);
+          if (entry === "exited" || entry === "barrier")
+            yield* Deferred.succeed(drained, undefined);
+        }),
+      );
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          unsubscribeSlow();
+          unsubscribeSeen();
+        }),
+      );
+
+      ptyAdapter.processes[0]!.emitData("old");
+      yield* Deferred.await(gates.old.reached);
+      // A changed launch environment restarts the shell while the old drain is still held.
+      yield* manager.open(openInput({ env: { RESTARTED: "1" } }));
+      const newShell = ptyAdapter.processes[1]!;
+      newShell.emitData("new");
+      yield* Deferred.await(gates.new.reached);
+      newShell.emitExit({ exitCode: 4, signal: 0 });
+      yield* Deferred.succeed(gates.old.release, undefined);
+      // Ends the wait if the exit was lost. A second drain started here would report before "new".
+      newShell.emitData("barrier");
+      yield* Deferred.succeed(gates.new.release, undefined);
+      yield* Deferred.await(drained);
+
+      expect(seen).toEqual(["old", "new", "exited"]);
+    }),
+  );
+
   it.effect("force-kills a closed terminal that ignores SIGTERM when the manager shuts down", () =>
     Effect.gen(function* () {
       const scope = yield* Scope.make();
