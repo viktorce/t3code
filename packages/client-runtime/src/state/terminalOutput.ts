@@ -3,6 +3,7 @@ import {
   TERMINAL_SEQUENCE_GROUND,
   terminalSequenceEnd,
   terminalSequenceStateAfter,
+  unfinishedTerminalSequence,
 } from "@t3tools/contracts";
 
 export interface TerminalOutputChunk {
@@ -280,13 +281,14 @@ const CLEAR_TERMINAL_TEXT = "\u001b[H\u001b[2J\u001b[3J";
 
 /** Earlier output stays retained so a replay from the start restores those modes. */
 function clearOutput(current: TerminalOutputState, maxBufferBytes: number): TerminalOutputState {
-  // The erase rides over the budget: trimming here would evict the output that set those modes.
+  // The erase's ESC makes an emulator abandon a control sequence it is partway through and draw
+  // the rest as text, so the start of that sequence is sent again after the erase.
+  const open = unfinishedTerminalSequence(current.chunks.map((chunk) => chunk.data).join(""));
+  // Both ride over the budget: trimming here would evict the output that set those modes.
   const cleared = appendOutput(
     current,
-    CLEAR_TERMINAL_TEXT,
-    maxBufferBytes <= 0
-      ? maxBufferBytes
-      : Math.max(maxBufferBytes, current.retainedBytes + CLEAR_TERMINAL_TEXT.length),
+    `${CLEAR_TERMINAL_TEXT}${open}`,
+    maxBufferBytes <= 0 ? maxBufferBytes : Number.POSITIVE_INFINITY,
   );
   return { ...cleared, textStartOffset: cleared.nextOffset };
 }

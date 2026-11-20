@@ -15,6 +15,7 @@ import {
   INITIAL_TERMINAL_OUTPUT_CURSOR,
   nextTerminalAttachSeedState,
   readTerminalOutputUpdate,
+  terminalOutputReplay,
   terminalOutputText,
 } from "./terminalSession.ts";
 
@@ -350,6 +351,34 @@ describe("terminal session reducers", () => {
       data: "hello",
     });
     expect(state.lifecycleVersion).toBe(2);
+  });
+
+  it("sends the start of an unfinished control sequence again after the erase", () => {
+    const erase = "\u001b[H\u001b[2J\u001b[3J";
+    const open = "\u001b]0;é";
+    // A full 16-byte buffer that ends partway through a title string that came in two outputs.
+    let state = EMPTY_TERMINAL_BUFFER_STATE;
+    for (const data of ["0123456789\u001b]0;", "é"]) {
+      state = applyTerminalAttachStreamEvent(
+        state,
+        { type: "output", threadId: TARGET.threadId, terminalId: TARGET.terminalId, data },
+        16,
+      );
+    }
+    const cursor = readTerminalOutputUpdate(state.output, INITIAL_TERMINAL_OUTPUT_CURSOR).cursor;
+
+    state = applyTerminalAttachStreamEvent(
+      state,
+      { type: "cleared", threadId: TARGET.threadId, terminalId: TARGET.terminalId },
+      16,
+    );
+    expect(readTerminalOutputUpdate(state.output, cursor)).toMatchObject({
+      type: "append",
+      data: `${erase}${open}`,
+    });
+    // An older mobile binary recreates its emulator unless the new replay extends the last one.
+    expect(terminalOutputReplay(state.output)).toBe(`0123456789${open}${erase}${open}`);
+    expect(terminalOutputText(state.output)).toBe("");
   });
 
   it("does not reuse a renderer cursor when a fresh attach has matching counters", () => {
