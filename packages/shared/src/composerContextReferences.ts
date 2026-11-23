@@ -6,8 +6,11 @@ import {
   type ElementContextDetails,
   type EnvironmentId,
   type KnownComposerContextRecord,
+  type OrchestrationMessageContext,
+  type ResponseContextRecord,
   type ScopedThreadRef,
   type ThreadContextRecord,
+  type ThreadId,
 } from "@t3tools/contracts";
 
 import { expandAssistantCitationsForProvider } from "./assistantCitations.ts";
@@ -80,6 +83,140 @@ export function sanitizeComposerContextLabel(label: string, kind: ComposerContex
   if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) end--;
   const cleaned = normalized.slice(0, end);
   return cleaned.length > 0 ? cleaned : kind;
+}
+
+const RESPONSE_LABEL_MAX_CHARS = 64;
+
+export function isResponseContextRecord(
+  record: ComposerContextRecord,
+): record is ResponseContextRecord {
+  return record.kind === "response" && "citation" in record;
+}
+
+export function responseContextReference(record: ResponseContextRecord): {
+  kind: "response";
+  contextId: ComposerContextId;
+  label: string;
+} {
+  return { kind: "response", contextId: record.contextId, label: record.label };
+}
+
+function responseContextLabel(text: string): string {
+  const last = text.charCodeAt(RESPONSE_LABEL_MAX_CHARS - 1);
+  const end =
+    last >= 0xd800 && last <= 0xdbff ? RESPONSE_LABEL_MAX_CHARS - 1 : RESPONSE_LABEL_MAX_CHARS;
+  return sanitizeComposerContextLabel(text.slice(0, end), "response");
+}
+
+/** One record per response, so replying to it again reuses the same reference. */
+export function responseContextRecord(
+  input: Pick<ResponseContextRecord, "citation" | "itemId"> & {
+    readonly subagents: ReadonlyArray<{
+      readonly threadId: ThreadId;
+      readonly title: string;
+      readonly environmentId?: EnvironmentId;
+    }>;
+  },
+): ResponseContextRecord {
+  return {
+    version: 1,
+    kind: "response",
+    contextId: toKindScopedComposerContextId("response", input.citation.messageId),
+    label: responseContextLabel(input.citation.text),
+    citation: input.citation,
+    itemId: input.itemId,
+    ...(input.subagents.length > 0
+      ? {
+          subagents: input.subagents.slice(0, 20).map(({ title, ...subagent }) => ({
+            ...subagent,
+            title: sanitizeComposerContextLabel(title, "response"),
+          })),
+        }
+      : {}),
+  };
+}
+
+// The reply leads the message, so its card sits above the text it is about. Text that
+// already points at that response, from a pasted card, keeps its one reference.
+export function withReplyReference(prompt: string, replyTo: ResponseContextRecord | null): string {
+  if (!replyTo) return prompt;
+  if (
+    collectComposerContextReferences(prompt).some(
+      (occurrence) => occurrence.contextId === replyTo.contextId,
+    )
+  ) {
+    return prompt;
+  }
+  const reference = formatComposerContextReference(responseContextReference(replyTo));
+  return prompt.length > 0 ? `${reference} ${prompt}` : reference;
+}
+
+export function withReplyContext(
+  context: OrchestrationMessageContext | undefined,
+  replyTo: ResponseContextRecord | null,
+): OrchestrationMessageContext | undefined {
+  if (!replyTo) return context;
+  const existing = context?.records ?? [];
+  if (existing.some((record) => record.contextId === replyTo.contextId)) {
+    return context;
+  }
+  return { version: 1, records: [...existing, replyTo] };
+}
+
+export function removeComposerContextReference(
+  prompt: string,
+  contextId: string,
+): { prompt: string; cursor: number } {
+  const occurrences = collectComposerContextReferences(prompt).filter(
+    (candidate) => candidate.contextId === contextId,
+  );
+  if (occurrences.length === 0) return { prompt, cursor: prompt.length };
+  let result = prompt;
+  let cursor = prompt.length;
+  for (const occurrence of occurrences.reverse()) {
+    let { start, end } = occurrence;
+    if (result[end] === " ") end += 1;
+    else if (result[start - 1] === " ") start -= 1;
+    result = `${result.slice(0, start)}${result.slice(end)}`;
+    cursor = start;
+  }
+  if (cursor >= result.length) {
+    result = result.trimEnd();
+    cursor = result.length;
+  }
+  return { prompt: result, cursor };
+}
+
+/**
+ * Splits a pending reply out of a serialized message's text and context so editors and failed
+ * send restores can show it in the reply bar instead of as an inline chip.
+ */
+export function extractReplyFromMessage(
+  text: string,
+  context: OrchestrationMessageContext | undefined,
+): {
+  readonly text: string;
+  readonly context: OrchestrationMessageContext | undefined;
+  readonly replyTo: ResponseContextRecord | undefined;
+} {
+  if (!context) return { text, context, replyTo: undefined };
+  const referenced = new Set(
+    collectComposerContextReferences(text).map((occurrence) => occurrence.contextId),
+  );
+  const replyTo = context.records.find(
+    (record): record is ResponseContextRecord =>
+      isResponseContextRecord(record) && referenced.has(record.contextId),
+  );
+  if (!replyTo) return { text, context, replyTo: undefined };
+  const strippedText = removeComposerContextReference(text, replyTo.contextId).prompt.trimStart();
+  const remainingRecords = context.records.filter(
+    (record) => record.contextId !== replyTo.contextId,
+  );
+  return {
+    text: strippedText,
+    context: remainingRecords.length > 0 ? { version: 1, records: remainingRecords } : undefined,
+    replyTo,
+  };
 }
 
 /** One record per thread, so re-attaching a renamed thread reuses its chip. */

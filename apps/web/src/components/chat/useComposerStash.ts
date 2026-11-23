@@ -38,7 +38,6 @@ import { isCommandPaletteOpen } from "../../commandPaletteBus";
 import { pendingDraftWork } from "./pendingDraftWork";
 import { countPreparingComposerImages } from "./preparingComposerImages";
 import {
-  isResponseContextRecord,
   previewAnnotationContextRecord,
   reviewCommentContextRecord,
   terminalContextRecord,
@@ -52,7 +51,10 @@ import {
 } from "../../lib/attachmentUploadQueue";
 import { remainingComposerAttachmentSlots } from "./composerThreadImport";
 import { composerImageDedupKey } from "./composerAttachmentFiles";
-import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
+import {
+  isResponseContextRecord,
+  replaceComposerContextReferences,
+} from "@t3tools/shared/composerContextReferences";
 import { resizeSnapShotSource } from "../../lib/snapShotSource";
 import { registerCommands } from "../../shortcuts/dispatcher";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../../terminalUiStateStore";

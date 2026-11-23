@@ -2,12 +2,17 @@ import type {
   ChatAttachment,
   MessageId,
   OrchestrationMessageContext,
+  ResponseContextRecord,
   RunId,
   UploadChatAttachment,
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
+import * as Equal from "effect/Equal";
 import { msg } from "gt-react-native";
-import { stripAttachmentOnlyBootstrapPrompt } from "@t3tools/shared/composerContextReferences";
+import {
+  extractReplyFromMessage,
+  stripAttachmentOnlyBootstrapPrompt,
+} from "@t3tools/shared/composerContextReferences";
 import {
   makeQueuedRunEditStore,
   resolveQueuedEditExit,
@@ -25,6 +30,7 @@ import {
   getComposerDraftSnapshot,
   mergeComposerDraftContent,
   setComposerDraftContext,
+  setComposerDraftReplyTo,
   setComposerDraftText,
 } from "./use-composer-drafts";
 
@@ -32,6 +38,7 @@ export interface QueuedRunEdit {
   readonly runId: RunId;
   readonly messageId: MessageId;
   readonly originalText: string;
+  readonly originalReplyTo?: ResponseContextRecord | null;
   readonly existingAttachments: ReadonlyArray<ChatAttachment>;
   readonly context?: OrchestrationMessageContext;
   /** Removing a server attachment changes the message even when the draft looks untouched. */
@@ -76,17 +83,22 @@ function exitQueuedRunEdit(threadKey: string, edit: QueuedRunEdit): void {
   const editDraftKey = queuedEditDraftKey(threadKey, edit.runId);
   const editDraft = getComposerDraftSnapshot(editDraftKey);
   const threadDraft = getComposerDraftSnapshot(threadKey);
-  const editRestorable = editDraft.text.trim().length > 0 || editDraft.attachments.length > 0;
+  const editRestorable =
+    editDraft.text.trim().length > 0 ||
+    editDraft.attachments.length > 0 ||
+    editDraft.replyTo !== undefined;
   const recovery = resolveQueuedEditExit({
     editChanged:
       editDraft.text !== edit.originalText ||
       editDraft.attachments.length > 0 ||
-      edit.removedExistingAttachment === true,
+      edit.removedExistingAttachment === true ||
+      !Equal.equals(editDraft.replyTo ?? null, edit.originalReplyTo ?? null),
     // A cleared edit has nothing to put back, so it can only be discarded.
     threadDraftEmpty:
       editRestorable &&
       threadDraft.text.trim().length === 0 &&
-      threadDraft.attachments.length === 0,
+      threadDraft.attachments.length === 0 &&
+      threadDraft.replyTo === undefined,
   });
   if (recovery === "kept") {
     // The merge publishes the draft before writing it, so a failed write only delays persistence to the next one.
@@ -94,6 +106,7 @@ function exitQueuedRunEdit(threadKey: string, edit: QueuedRunEdit): void {
       text: editDraft.text,
       attachments: editDraft.attachments,
       ...(editDraft.context ? { context: editDraft.context } : {}),
+      ...(editDraft.replyTo ? { replyTo: editDraft.replyTo } : {}),
     }).catch((error: unknown) => {
       console.warn("[queued-run-edit] could not persist the recovered edit", error);
     });
@@ -121,13 +134,23 @@ export function beginQueuedRunEdit(
   // The composer moves off the thread draft, so a paste or pick still running for it is dropped.
   abortComposerDraftOperations(threadKey);
   const draftKey = queuedEditDraftKey(threadKey, edit.runId);
-  const originalText = stripAttachmentOnlyBootstrapPrompt(edit.originalText);
+  const extracted = extractReplyFromMessage(
+    stripAttachmentOnlyBootstrapPrompt(edit.originalText),
+    edit.context,
+  );
+  const originalText = extracted.text;
+  const originalReplyTo = extracted.replyTo ?? null;
   clearComposerDraft(draftKey);
   setComposerDraftText(draftKey, originalText);
-  setComposerDraftContext(draftKey, edit.context);
+  setComposerDraftContext(draftKey, extracted.context);
+  if (originalReplyTo) setComposerDraftReplyTo(draftKey, originalReplyTo);
   queuedRunEdits.begin(
     threadKey,
-    { ...edit, originalText },
+    {
+      ...edit,
+      originalText,
+      ...(originalReplyTo ? { originalReplyTo } : {}),
+    },
     { runs, onRunLeftQueue: exitQueuedRunEdit },
   );
 }

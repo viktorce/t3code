@@ -47,7 +47,11 @@ import {
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
 import { deriveThreadTitleSeed } from "@t3tools/client-runtime/operations";
 import { upgradeLegacyContextMessage } from "@t3tools/shared/composerContextLegacy";
-import { restoreAttachmentOnlyBootstrapPrompt } from "@t3tools/shared/composerContextReferences";
+import {
+  restoreAttachmentOnlyBootstrapPrompt,
+  withReplyContext,
+  withReplyReference,
+} from "@t3tools/shared/composerContextReferences";
 import {
   composerContextSendBlockReason,
   reidentifyComposerContext,
@@ -545,6 +549,14 @@ export function useThreadComposerState(input: {
       );
       return;
     }
+    const replyTo = draft.replyTo ?? null;
+    const contextForSave = withReplyContext(draft.context, replyTo);
+    const contextBlockReason = composerContextSendBlockReason(contextForSave);
+    if (contextBlockReason) {
+      Dialog.alert(m(msg("Too much context")), contextBlockReason);
+      return;
+    }
+    const textForSave = withReplyReference(text, replyTo);
     const finishSave = startQueuedRunEditSave(threadKey);
     if (finishSave === null) return;
     savingQueuedEditRef.current = true;
@@ -580,7 +592,7 @@ export function useThreadComposerState(input: {
     }
     const payload = resolveQueuedEditPayload({
       edit,
-      draftContext: draft.context,
+      draftContext: contextForSave,
       draftAttachments: draft.attachments,
       uploaded: prepared.value.attachments,
     });
@@ -589,7 +601,7 @@ export function useThreadComposerState(input: {
       input: {
         threadId: thread.id,
         runId: edit.runId,
-        text: restoreAttachmentOnlyBootstrapPrompt(text, payload.attachments.length > 0),
+        text: restoreAttachmentOnlyBootstrapPrompt(textForSave, payload.attachments.length > 0),
         edit: {
           messageId: edit.messageId,
           attachments: payload.attachments,
@@ -692,7 +704,9 @@ export function useThreadComposerState(input: {
       return null;
     }
 
-    const contextBlockReason = composerContextSendBlockReason(draft.context);
+    const replyTo = draft.replyTo ?? null;
+    const contextForSend = withReplyContext(draft.context, replyTo);
+    const contextBlockReason = composerContextSendBlockReason(contextForSend);
     if (contextBlockReason) {
       Dialog.alert(m(msg("Too much context")), contextBlockReason);
       return null;
@@ -706,7 +720,7 @@ export function useThreadComposerState(input: {
       } else if (
         sideChatCommand.prompt.length === 0 &&
         attachments.length === 0 &&
-        (draft.context?.records.length ?? 0) === 0
+        (contextForSend?.records.length ?? 0) === 0
       ) {
         Dialog.alert(
           m(msg("Ask a side question")),
@@ -738,10 +752,10 @@ export function useThreadComposerState(input: {
             {
               ...serializeComposerMessageForServer(
                 restoreAttachmentOnlyBootstrapPrompt(
-                  sideChatCommand.prompt,
+                  withReplyReference(sideChatCommand.prompt, replyTo),
                   prepared.attachments.length > 0,
                 ),
-                uploadedComposerContext(draft.context, attachments, prepared.attachments),
+                uploadedComposerContext(contextForSend, attachments, prepared.attachments),
               ),
               attachments: prepared.attachments,
               titleSeed: deriveThreadTitleSeed({ text: sideChatCommand.prompt, attachments }, m),
@@ -760,6 +774,7 @@ export function useThreadComposerState(input: {
           await mergeComposerDraftContent(threadKey, {
             text: draft.text,
             context: draft.context,
+            ...(draft.replyTo ? { replyTo: draft.replyTo } : {}),
             attachments: [],
           }).catch(() => undefined);
           appendComposerDraftAttachments(threadKey, attachments, { restore: true });
@@ -783,6 +798,7 @@ export function useThreadComposerState(input: {
       thread.latestRun != null &&
       attachments.length === 0 &&
       draft.context === undefined &&
+      replyTo === null &&
       isClearComposerCommand(text)
     ) {
       setFreshSessionPending(threadKey, true);
@@ -798,7 +814,7 @@ export function useThreadComposerState(input: {
       (entry) => entry.instanceId === modelSelection.instanceId,
     );
     const feedbackCommand =
-      attachments.length === 0 && provider?.driver === "codex"
+      attachments.length === 0 && replyTo === null && provider?.driver === "codex"
         ? parseCodexFeedbackCommand(text)
         : null;
     if (feedbackCommand) {
@@ -846,7 +862,7 @@ export function useThreadComposerState(input: {
     if (beforeDispatch !== undefined) {
       const response = await beforeDispatch(
         text,
-        attachments.length > 0 || draft.context !== undefined,
+        attachments.length > 0 || draft.context !== undefined || replyTo !== null,
       );
       if (!response) return null;
       // A context paste still landing, or any draft or settings change while approvals were
@@ -856,6 +872,7 @@ export function useThreadComposerState(input: {
       if (
         current.text !== draft.text ||
         JSON.stringify(current.context) !== JSON.stringify(draft.context) ||
+        JSON.stringify(current.replyTo) !== JSON.stringify(draft.replyTo) ||
         JSON.stringify(current.modelSelection) !== JSON.stringify(draft.modelSelection) ||
         current.runtimeMode !== draft.runtimeMode ||
         current.interactionMode !== draft.interactionMode ||
@@ -889,6 +906,7 @@ export function useThreadComposerState(input: {
     // A redirect belongs to the approval it answers; the armed session waits for the next message.
     const freshContext = beforeDispatch === undefined && isFreshSessionPending(threadKey);
     const metadata = makeQueuedMessageMetadata();
+    const textForSend = withReplyReference(text, replyTo);
     // A fresh session drops the context a compaction would summarize. Only a send the notice
     // announced compacts, since the notice's minute clock can trail the exact deadline.
     const compactBeforeSend =
@@ -896,7 +914,7 @@ export function useThreadComposerState(input: {
       !freshContext &&
       followUpDispatchMode === null &&
       appAtomRegistry.get(fullHistoryThreadKeysAtom)[threadKey] !== true &&
-      resumeCompactionTokens(modelSelection, text, metadata.createdAt) !== null;
+      resumeCompactionTokens(modelSelection, textForSend, metadata.createdAt) !== null;
     const messageId = MessageId.make(metadata.messageId);
     onWillEnqueue?.();
     clearThreadComposerError(threadKey);
@@ -905,9 +923,9 @@ export function useThreadComposerState(input: {
       threadId: selectedThreadShell.id,
       messageId,
       commandId: CommandId.make(metadata.commandId),
-      text,
+      text: textForSend,
       attachments,
-      context: draft.context,
+      context: contextForSend,
       modelSelection,
       runtimeMode: draft.runtimeMode ?? thread.runtimeMode,
       interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -929,8 +947,9 @@ export function useThreadComposerState(input: {
       (error: unknown) => {
         // Restore with uncapped append; capped merge could drop attachments added during the failed write.
         void mergeComposerDraftContent(threadKey, {
-          text,
+          text: draft.text,
           context: draft.context,
+          ...(draft.replyTo ? { replyTo: draft.replyTo } : {}),
           attachments: [],
         });
         appendComposerDraftAttachments(threadKey, attachments, { restore: true });

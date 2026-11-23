@@ -23,6 +23,7 @@ import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   type EnvironmentId,
 } from "@t3tools/contracts";
+import { extractReplyFromMessage } from "@t3tools/shared/composerContextReferences";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -519,10 +520,12 @@ export const restoreRejectedQueuedMessage = Effect.fn("ThreadOutbox.restoreRejec
       }
       stampRecoveryDraftProject(queuedMessage, draftKey);
       // The merge publishes even when persisting it fails, so the rollback is captured either way.
+      const extracted = extractReplyFromMessage(queuedMessage.text, queuedMessage.context);
       yield* storage("restore-to-draft", queuedMessage.messageId, () =>
         mergeComposerDraftContent(draftKey, {
-          text: queuedMessage.text,
-          context: queuedMessage.context,
+          text: extracted.text,
+          context: extracted.context,
+          ...(extracted.replyTo ? { replyTo: extracted.replyTo } : {}),
           attachments: queuedMessage.attachments,
         }),
       ).pipe(

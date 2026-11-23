@@ -26,7 +26,6 @@ import {
   type EnvironmentId,
   type ModelSelection,
   type PreviewAnnotationPayload,
-  type ResponseContextRecord,
   type ScopedThreadRef,
   type ThreadContextRecord,
   type ThreadId,
@@ -85,15 +84,10 @@ import {
   DraftId,
 } from "../../composerDraftStore";
 import type { TerminalContextDraft } from "../../lib/terminalContext";
-import {
-  collectInlineContextIds,
-  ensureInlineContextReferences,
-  formatInlineContextReference,
-} from "../../lib/composerContextReferences";
+import { ensureInlineContextReferences } from "../../lib/composerContextReferences";
 import {
   buildMessageContext,
   previewAnnotationContextReference,
-  responseContextReference,
 } from "../../lib/composerContextRecords";
 import { environmentServerConfigsAtom } from "../../state/server";
 import { threadEnvironment } from "../../state/threads";
@@ -128,6 +122,7 @@ import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import {
   ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
   threadContextsOutsideEnvironment,
+  withReplyReference,
 } from "@t3tools/shared/composerContextReferences";
 import {
   draftSendState,
@@ -177,14 +172,6 @@ function liveAttachmentCapabilities(
         config?.environment.capabilities.fileAttachments?.maxUploadBytes ?? null,
     }),
   };
-}
-
-// The reply leads the message, so its card sits above the text it is about. Text that
-// already points at that response, from a pasted card, keeps its one reference.
-function withReplyReference(prompt: string, replyTo: ResponseContextRecord | null) {
-  return replyTo && !collectInlineContextIds(prompt).includes(replyTo.contextId)
-    ? `${formatInlineContextReference(responseContextReference(replyTo))} ${prompt}`
-    : prompt;
 }
 
 function draftHasNonPromptContent(target: ComposerThreadTarget) {

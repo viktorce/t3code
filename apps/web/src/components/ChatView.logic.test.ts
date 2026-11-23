@@ -5,7 +5,11 @@ import {
   environmentContextReference,
   threadContextReference,
 } from "../lib/composerContextRecords";
-import { threadContextRecord } from "@t3tools/shared/composerContextReferences";
+import {
+  responseContextRecord,
+  responseContextReference,
+  threadContextRecord,
+} from "@t3tools/shared/composerContextReferences";
 import {
   prepareRevertedMessageAttachments,
   boundAttachmentIds,
@@ -28,11 +32,7 @@ import {
 import { ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
 import { deriveProviderInstanceEntries } from "../providerInstances";
 import { ensureInlineContextReferences } from "../lib/composerContextReferences";
-import {
-  responseContextRecord,
-  responseContextReference,
-  terminalContextReference,
-} from "../lib/composerContextRecords";
+import { terminalContextReference } from "../lib/composerContextRecords";
 import {
   CheckpointScopeId,
   CommandId,

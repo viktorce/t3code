@@ -26,6 +26,7 @@ import {
 } from "@t3tools/contracts";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
+  isResponseContextRecord,
   restoreAttachmentOnlyBootstrapPrompt,
   stripAttachmentOnlyBootstrapPrompt,
 } from "@t3tools/shared/composerContextReferences";
@@ -47,7 +48,7 @@ import {
   releaseDraftAttachments,
   startAttachmentUpload,
 } from "../../lib/attachmentUploadQueue";
-import { buildMessageContext, isResponseContextRecord } from "../../lib/composerContextRecords";
+import { buildMessageContext } from "../../lib/composerContextRecords";
 import {
   collectInlineContextIds,
   removeInlineContextReference,

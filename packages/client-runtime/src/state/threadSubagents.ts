@@ -1,7 +1,17 @@
 import * as DateTime from "effect/DateTime";
-import type { OrchestrationV2Subagent, OrchestrationV2ThreadProjection } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  NodeId,
+  OrchestrationV2RemoteTaskChild,
+  OrchestrationV2Subagent,
+  OrchestrationV2ThreadProjection,
+  ScopedThreadRef,
+  ThreadId,
+  TurnItemId,
+} from "@t3tools/contracts";
 import { copySorted } from "@t3tools/shared/Array";
 
+import type { ThreadStructure } from "./shell.ts";
 import { isActiveSubagentStatus, isTerminalSubagentStatus } from "./subagentRuntime.ts";
 import { resolveActiveThreadRun } from "./threadWorkflows.ts";
 import { mFallback, msg } from "gt-i18n";
@@ -123,4 +133,105 @@ export function resolveSubagentPillSegment(
       }),
     ),
   };
+}
+
+interface SubagentChild {
+  readonly threadId: ThreadId;
+  /** Set when the task ran on a linked environment, which holds its thread. */
+  readonly environmentId?: EnvironmentId;
+  readonly title: string | null | undefined;
+}
+
+export interface ResponseSubagent {
+  readonly threadId: ThreadId;
+  readonly title: string;
+  /** Set when the task ran on a linked environment, which holds its thread. */
+  readonly environmentId?: EnvironmentId;
+}
+
+/**
+ * The subagents a response reported on. A result reaches the thread as a message from the
+ * subagent's thread or as a completion notice, at the start of a run or steered into one, so the
+ * inputs just before the response decide it. Turn items are read because older history loads
+ * nothing else.
+ */
+export function deriveResponseSubagents(
+  projection: Pick<ThreadStructure, "visibleTurnItems" | "subagents" | "messages"> | undefined,
+  environmentId: EnvironmentId,
+  itemId: TurnItemId,
+  readThreadTitle: (ref: ScopedThreadRef) => string | null | undefined,
+): ReadonlyArray<ResponseSubagent> {
+  if (!projection) return [];
+  const items = projection.visibleTurnItems;
+  const isInput = (index: number) => {
+    const type = items[index]?.item.type;
+    return type === "user_message" || type === "notification";
+  };
+  let index = items.findIndex((projected) => projected.sourceItemId === itemId) - 1;
+  while (index >= 0 && !isInput(index)) index -= 1;
+
+  const byTask = new Map<NodeId, SubagentChild>();
+  const local = new Map<ThreadId, SubagentChild>();
+  const remember = (
+    taskId: NodeId,
+    childThreadId: ThreadId | null,
+    remote: OrchestrationV2RemoteTaskChild | undefined,
+    title: string | null,
+  ) => {
+    if (childThreadId !== null) {
+      const child = { threadId: childThreadId, title };
+      byTask.set(taskId, child);
+      local.set(childThreadId, child);
+    } else if (remote) {
+      // A task sent to a linked environment has no thread here; its thread lives there.
+      const { threadId, environmentId: remoteEnvironmentId } = remote;
+      byTask.set(taskId, {
+        threadId,
+        environmentId: remoteEnvironmentId,
+        title: title ?? remote.title,
+      });
+    }
+  };
+  for (const { item } of items) {
+    if (item.type === "subagent") {
+      remember(item.subagentId, item.childThreadId, item.remoteChild, null);
+    }
+  }
+  for (const subagent of projection.subagents) {
+    remember(subagent.id, subagent.childThreadId, subagent.remoteChild, subagent.title);
+  }
+
+  const found = new Map<string, SubagentChild>();
+  const add = (child: SubagentChild | undefined) => {
+    if (child) found.set(`${child.environmentId ?? ""}:${child.threadId}`, child);
+  };
+  for (; index >= 0 && isInput(index); index -= 1) {
+    const item = items[index]!.item;
+    if (item.type === "notification") {
+      // A notice names its child itself, so it counts even when the task is no longer loaded.
+      if ("childThreadId" in item.source && item.source.childThreadId !== undefined) {
+        const threadId = item.source.childThreadId;
+        add(local.get(threadId) ?? { threadId, title: null });
+      }
+      for (const taskId of "taskIds" in item.source ? item.source.taskIds : []) {
+        add(byTask.get(taskId));
+      }
+    } else if (item.type === "user_message") {
+      const message = projection.messages.find(({ id }) => id === item.messageId);
+      for (const taskId of message?.delegatedCompletion?.taskIds ?? []) add(byTask.get(taskId));
+      // A sender counts only as this thread's subagent: a child's first message comes from its parent.
+      if (item.senderThreadId !== undefined) add(local.get(item.senderThreadId));
+    }
+  }
+  return [...found.values()].map(({ title, ...child }) => ({
+    ...child,
+    title:
+      title?.trim() ||
+      readThreadTitle({
+        environmentId: child.environmentId ?? environmentId,
+        threadId: child.threadId,
+      })?.trim() ||
+      // oxlint-disable-next-line t3code/no-untranslated-copy -- subagent title stored in the reply record sent to the agent
+      "Agent",
+  }));
 }

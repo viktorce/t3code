@@ -476,17 +476,29 @@ export function MobileEnrichedMarkdownText(props: SelectableMarkdownTextProps) {
           containerStyle={{ flexShrink: 1, minWidth: 0 }}
           flavor="github"
           selectable
-          contextMenuItems={
-            props.onCiteText
-              ? [
-                  {
-                    text: gt("Cite", { $context: "verb, quote selected text" }),
-                    icon: "quote.bubble",
-                    onPress: ({ text }) => props.onCiteText?.(text),
-                  },
-                ]
-              : undefined
-          }
+          contextMenuItems={(() => {
+            const items = [
+              ...(props.onCiteText
+                ? [
+                    {
+                      text: gt("Cite", { $context: "verb, quote selected text" }),
+                      icon: "quote.bubble",
+                      onPress: ({ text }: { text: string }) => props.onCiteText?.(text),
+                    },
+                  ]
+                : []),
+              ...(props.onReply
+                ? [
+                    {
+                      text: gt("Reply", { $context: "verb, reply to an assistant response" }),
+                      icon: "arrowshape.turn.up.left",
+                      onPress: () => props.onReply?.(),
+                    },
+                  ]
+                : []),
+            ];
+            return items.length > 0 ? items : undefined;
+          })()}
           selectionClipboard={selectionClipboard}
           selectionMenuConfig={selectionMenuConfig}
           selectionColor={props.textStyle.selectionColor}

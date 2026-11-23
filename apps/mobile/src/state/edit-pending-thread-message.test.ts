@@ -1,11 +1,27 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { CommandId, EnvironmentId, MessageId, ThreadId } from "@t3tools/contracts";
+import {
+  CommandId,
+  EnvironmentId,
+  MessageId,
+  ThreadId,
+  TurnItemId,
+  type ResponseContextRecord,
+} from "@t3tools/contracts";
+import {
+  responseContextRecord,
+  withReplyContext,
+  withReplyReference,
+} from "@t3tools/shared/composerContextReferences";
 import type { QueuedThreadMessage } from "./thread-outbox-model";
 
 const state = vi.hoisted(() => ({
   dispatching: {} as Record<string, true>,
   held: {} as Record<string, true>,
-  draft: { text: "Existing draft", attachments: [] as { id: string }[] },
+  draft: {
+    text: "Existing draft",
+    attachments: [] as { id: string }[],
+    replyTo: undefined as ResponseContextRecord | undefined,
+  },
   confirm: vi.fn(async () => true),
   remove: vi.fn(async () => true),
   flush: vi.fn(async () => {}),
@@ -33,10 +49,18 @@ vi.mock("./thread-outbox-removal", () => ({ removeThreadOutboxMessage: state.rem
 vi.mock("./use-composer-drafts", () => ({
   waitForComposerDraftsLoaded: async () => {},
   getComposerDraftSnapshot: () => state.draft,
-  mergeComposerDraftContent: async (_key: string, message: QueuedThreadMessage) => {
+  mergeComposerDraftContent: async (
+    _key: string,
+    message: {
+      readonly text: string;
+      readonly attachments: ReadonlyArray<{ id: string }>;
+      readonly replyTo?: ResponseContextRecord;
+    },
+  ) => {
     state.draft = {
       text: `${state.draft.text}\n\n${message.text}`,
       attachments: [...state.draft.attachments, ...message.attachments],
+      replyTo: state.draft.replyTo ?? message.replyTo,
     };
   },
   updateComposerDraftSettings: () => {},
@@ -69,7 +93,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   state.dispatching = {};
   state.held = {};
-  state.draft = { text: "Existing draft", attachments: [] };
+  state.draft = { text: "Existing draft", attachments: [], replyTo: undefined };
   state.confirm.mockResolvedValue(true);
   state.remove.mockResolvedValue(true);
   state.flush.mockResolvedValue(undefined);
@@ -98,12 +122,37 @@ describe("editing a pending message", () => {
   it("rolls back the draft if removing the queued message fails", async () => {
     state.remove.mockRejectedValueOnce(new Error("disk error"));
     await expect(editPendingThreadMessage(message)).rejects.toThrow("disk error");
-    expect(state.draft).toEqual({ text: "Existing draft", attachments: [] });
+    expect(state.draft).toEqual({ text: "Existing draft", attachments: [], replyTo: undefined });
     expect(state.held).toEqual({});
   });
   it("rolls back when a newer queue revision wins", async () => {
     state.remove.mockResolvedValueOnce(false);
     expect(await editPendingThreadMessage(message)).toBe(false);
     expect(state.draft.text).toBe("Existing draft");
+  });
+  it("extracts a serialized reply into the draft's replyTo instead of leaving an inline chip", async () => {
+    const reply = responseContextRecord({
+      citation: {
+        version: 1,
+        environmentId: EnvironmentId.make("env"),
+        threadId: ThreadId.make("thread"),
+        messageId: MessageId.make("assistant-1"),
+        text: "First answer",
+        start: 0,
+        end: 12,
+        prefix: "",
+        suffix: "",
+      },
+      itemId: TurnItemId.make("item-1"),
+      subagents: [],
+    });
+    const queuedReply: QueuedThreadMessage = {
+      ...message,
+      text: withReplyReference("Queued follow up", reply),
+      context: withReplyContext(undefined, reply),
+    };
+    expect(await editPendingThreadMessage(queuedReply)).toBe(true);
+    expect(state.draft.text).toBe("Existing draft\n\nQueued follow up");
+    expect(state.draft.replyTo).toEqual(reply);
   });
 });

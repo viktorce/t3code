@@ -1,5 +1,8 @@
 import { expect, it } from "vite-plus/test";
-import { collectMobileAssistantTextSelectors } from "./assistantCitationSelection";
+import {
+  captureMobileAssistantMessageOpening,
+  collectMobileAssistantTextSelectors,
+} from "./assistantCitationSelection";
 import {
   findAssistantCitationText,
   serializeAssistantCitation,
@@ -105,4 +108,22 @@ it("uses the web math representation around a selected passage", () => {
     "after",
   );
   expect(display?.selector.prefix).toBe("Before \\[ x \\] ");
+});
+
+it("captures clean rendered openings for replies and falls back when rendered text is empty", () => {
+  expect(captureMobileAssistantMessageOpening("## **Summary**\n\nFirst line")).toEqual({
+    text: "Summary\nFirst line",
+    start: 0,
+    end: 18,
+    prefix: "",
+    suffix: "",
+  });
+  expect(captureMobileAssistantMessageOpening("![diagram](chart.png)")).toEqual({
+    text: "![diagram](chart.png)",
+    start: 0,
+    end: 21,
+    prefix: "",
+    suffix: "",
+  });
+  expect(captureMobileAssistantMessageOpening("   ")).toBeNull();
 });

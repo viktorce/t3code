@@ -25,6 +25,7 @@ import {
   ProviderInstanceId,
   RuntimeRequestId,
   ThreadId,
+  TurnItemId,
   type OrchestrationV2ThreadShell,
   type OrchestrationV2ShellSnapshot,
   type ModelSelection,
@@ -183,6 +184,7 @@ import type { DraftComposerAttachment } from "../lib/composerImages";
 import {
   collectComposerContextReferences,
   formatComposerContextReference,
+  responseContextRecord,
 } from "@t3tools/shared/composerContextReferences";
 import { appAtomRegistry } from "./atom-registry";
 import { startComposerDraftOperation } from "./composerDraftOperations";
@@ -208,6 +210,7 @@ import {
   createNewTaskDraft,
   createComposerDraftContextHistory,
   setComposerDraftContext,
+  setComposerDraftReplyTo,
   decodePersistedComposerState,
   ensureComposerDraftsLoaded,
   type ComposerDraft,
@@ -2928,5 +2931,75 @@ describe("mobile composer drafts", () => {
       },
     });
     expect(composerAttachmentCleanupMocks.remove).not.toHaveBeenCalled();
+  });
+
+  it("persists, replaces, clears, merges, and undoes pending replyTo state", () => {
+    const draftKey = "reply-environment:reply-thread";
+    const makeReply = (messageId: string, text: string) =>
+      responseContextRecord({
+        citation: {
+          version: 1,
+          environmentId: EnvironmentId.make("reply-environment"),
+          threadId: ThreadId.make("reply-thread"),
+          messageId: MessageId.make(messageId),
+          text,
+          start: 0,
+          end: text.length,
+          prefix: "",
+          suffix: "",
+        },
+        itemId: TurnItemId.make(`item-${messageId}`),
+        subagents: [],
+      });
+    const first = makeReply("assistant-1", "First answer");
+    const second = makeReply("assistant-2", "Second answer");
+
+    setComposerDraftReplyTo(draftKey, first);
+    const saved = getComposerDraftSnapshot(draftKey);
+    expect(saved.replyTo).toEqual(first);
+
+    // Reply-only drafts survive persistence decode.
+    const decoded = decodePersistedComposerState(
+      JSON.parse(JSON.stringify({ schemaVersion: 1, drafts: { [draftKey]: saved } })),
+    ).drafts[draftKey];
+    expect(decoded?.replyTo).toEqual(first);
+
+    // Replying to a second response replaces the pending reply.
+    setComposerDraftReplyTo(draftKey, second);
+    expect(getComposerDraftSnapshot(draftKey).replyTo).toEqual(second);
+
+    // Clearing draft content removes replyTo.
+    const cleared = clearComposerDraftContentState(
+      { [draftKey]: getComposerDraftSnapshot(draftKey) },
+      draftKey,
+    );
+    expect(cleared[draftKey]).toBeUndefined();
+
+    // Merging restores a reply into an empty draft, keeps an existing reply, and undoes cleanly.
+    const snapshot: ComposerDraft = { text: "", attachments: [] };
+    const merged = mergeComposerDraftContentState({ [draftKey]: snapshot }, draftKey, {
+      text: "Follow up",
+      attachments: [],
+      replyTo: first,
+    });
+    expect(merged[draftKey]?.replyTo).toEqual(first);
+    const keptExisting = mergeComposerDraftContentState(merged, draftKey, {
+      text: "More",
+      attachments: [],
+      replyTo: second,
+    });
+    expect(keptExisting[draftKey]?.replyTo).toEqual(first);
+
+    const undone = undoComposerDraftMergeState(
+      { [draftKey]: { ...merged[draftKey]!, text: `${merged[draftKey]!.text} extra` } },
+      draftKey,
+      snapshot,
+      merged[draftKey]!,
+    );
+    expect(undone[draftKey]?.text).toBe(" extra");
+    expect(undone[draftKey]?.replyTo).toBeUndefined();
+
+    setComposerDraftReplyTo(draftKey, null);
+    expect(getComposerDraftSnapshot(draftKey).replyTo).toBeUndefined();
   });
 });

@@ -12,7 +12,13 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
+import {
+  responseContextRecord,
+  withReplyContext,
+  withReplyReference,
+} from "@t3tools/shared/composerContextReferences";
 import { describe, expect, it } from "@effect/vitest";
 import { afterEach, beforeEach, vi } from "vite-plus/test";
 
@@ -976,6 +982,42 @@ describe("thread outbox recovery rollback", () => {
           `${message.environmentId}:${message.threadId}`
         ],
       ).toEqual({ message: "rejected", messageId: message.messageId });
+    }),
+  );
+
+  it.effect("restores a rejected reply into draft.replyTo instead of an inline chip", () =>
+    Effect.gen(function* () {
+      const reply = responseContextRecord({
+        citation: {
+          version: 1,
+          environmentId: EnvironmentId.make("environment-1"),
+          threadId: ThreadId.make("thread-1"),
+          messageId: MessageId.make("assistant-1"),
+          text: "First answer",
+          start: 0,
+          end: 12,
+          prefix: "",
+          suffix: "",
+        },
+        itemId: TurnItemId.make("item-1"),
+        subagents: [],
+      });
+      const message = {
+        ...queuedMessage({
+          messageId: "message-reply-restore",
+          text: withReplyReference("Follow up", reply),
+        }),
+        context: withReplyContext(undefined, reply),
+      };
+      const threadKey = `${message.environmentId}:${message.threadId}`;
+      yield* Effect.promise(() => harness.manager.enqueue(message));
+
+      expect(yield* restoreRejectedQueuedMessage(message, "rejected")).toBe("restored");
+
+      const restored = composerDrafts.getComposerDraftSnapshot(threadKey);
+      expect(restored.text).toBe("Follow up");
+      expect(restored.replyTo).toEqual(reply);
+      expect(restored.context).toBeUndefined();
     }),
   );
 

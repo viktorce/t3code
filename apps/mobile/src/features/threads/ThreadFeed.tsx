@@ -7,10 +7,17 @@ import { formatDuration } from "@t3tools/shared/orchestrationTimingCopy";
 import { Sheet } from "../../components/ui/Sheet";
 import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListSection } from "../../components/ui/ListSection";
-import { collectMobileAssistantTextSelectors } from "../../lib/assistantCitationSelection";
+import {
+  captureMobileAssistantMessageOpening,
+  collectMobileAssistantTextSelectors,
+} from "../../lib/assistantCitationSelection";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
-import { ASSISTANT_CITATION_MAX_TEXT_LENGTH, type AssistantCitation } from "@t3tools/contracts";
+import {
+  ASSISTANT_CITATION_MAX_TEXT_LENGTH,
+  type AssistantCitation,
+  type ResponseContextRecord,
+} from "@t3tools/contracts";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { useWorkspaceSettledContentWidth } from "../layout/workspace-content-width";
 import { useVisibleSecondClock } from "./use-visible-second-clock";
@@ -93,6 +100,7 @@ import {
   parseComposerContextHref,
   collectComposerContextReferences,
   replaceComposerContextReferences,
+  responseContextRecord,
   formatComposerContextReference,
 } from "@t3tools/shared/composerContextReferences";
 import { ComposerContextSheet } from "../../components/ComposerContextSheet";
@@ -291,6 +299,7 @@ import {
   workspaceLinkLookupQuery,
 } from "@t3tools/client-runtime/workspace-basename-lookup";
 import {
+  readResponseSubagents,
   resolveThreadLink,
   useEnvironmentPreviewTunnelOff,
   useLiveThreadLinkLabels,
@@ -413,6 +422,7 @@ export interface ThreadFeedProps {
   readonly skills?: ReadonlyArray<SelectableMarkdownSkill>;
   readonly onUseArtifactTemplate?: (template: CodexArtifactTemplate) => void;
   readonly onCiteAssistantText?: (citation: AssistantCitation) => void;
+  readonly onReplyToResponse?: (response: ResponseContextRecord) => void;
 }
 
 const USER_MESSAGE_COPY_MENU_ACTIONS = [
@@ -1305,6 +1315,7 @@ const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
   readonly environmentId: EnvironmentId;
   readonly citationSource?: Pick<AssistantCitation, "threadId" | "messageId">;
   readonly onCiteAssistantText?: (citation: AssistantCitation) => void;
+  readonly onReplyToResponse?: (response: ResponseContextRecord) => void;
   readonly markdownStyles: MarkdownStyleSet;
   readonly linkHandlers: MarkdownLinkHandlers;
   readonly reply?: MarkdownLinkReply | undefined;
@@ -1378,6 +1389,30 @@ const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
               }
             : undefined
         }
+        onReply={
+          props.onReplyToResponse && props.citationSource && props.reply
+            ? () => {
+                const opening = captureMobileAssistantMessageOpening(liveMarkdown);
+                if (!opening || !props.citationSource || !props.reply) return;
+                props.onReplyToResponse?.(
+                  responseContextRecord({
+                    citation: {
+                      version: 1,
+                      environmentId: props.environmentId,
+                      threadId: props.citationSource.threadId,
+                      messageId: props.citationSource.messageId,
+                      ...opening,
+                    },
+                    itemId: props.reply.sourceItemId,
+                    subagents: readResponseSubagents(
+                      scopeThreadRef(props.environmentId, props.citationSource.threadId),
+                      props.reply.sourceItemId,
+                    ),
+                  }),
+                );
+              }
+            : undefined
+        }
         markdownStyles={props.markdownStyles}
         linkHandlers={linkHandlers}
         onUseArtifactTemplate={props.onUseArtifactTemplate}
@@ -1418,6 +1453,7 @@ function AssistantMarkdownBlocks(props: {
   readonly markdown: string;
   readonly citationPath?: string;
   readonly onCiteText?: (text: string, path: string) => void;
+  readonly onReply?: () => void;
   /** The reply's reference definitions, passed down by the enclosing fold. */
   readonly definitions?: ReadonlyArray<string> | undefined;
   readonly markdownStyles: MarkdownStyleSet;
@@ -1489,6 +1525,7 @@ function AssistantMarkdownBlocks(props: {
                   )
               : undefined
           }
+          onReply={props.onReply}
           {...props.linkHandlers}
           renderImage={props.renderImage}
         />
@@ -1958,6 +1995,7 @@ function renderFeedEntry(
     | "environmentId"
     | "onUseArtifactTemplate"
     | "onCiteAssistantText"
+    | "onReplyToResponse"
     | "skills"
     | "dispatchingMessageId"
     | "onEditPendingMessage"
@@ -2680,6 +2718,11 @@ function renderFeedEntry(
               environmentId={props.environmentId}
               citationSource={{ threadId: props.threadId, messageId: message.id }}
               onCiteAssistantText={props.onCiteAssistantText}
+              onReplyToResponse={
+                props.onReplyToResponse && !message.streaming && message.projectedItem
+                  ? props.onReplyToResponse
+                  : undefined
+              }
               markdownStyles={styles}
               linkHandlers={props.markdownLinkHandlers}
               reply={message.projectedItem}
@@ -3809,6 +3852,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     disclosureLayout,
     reduceMotion,
     onCiteAssistantText: props.onCiteAssistantText,
+    onReplyToResponse: props.onReplyToResponse,
     formatMessageTime,
     worktreeSetup: props.worktreeSetup,
     preparingWorktree: props.preparingWorktree,
@@ -4295,6 +4339,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             onEditPendingMessage: props.onEditPendingMessage,
             onUseArtifactTemplate: props.onUseArtifactTemplate,
             onCiteAssistantText: props.onCiteAssistantText,
+            onReplyToResponse: props.onReplyToResponse,
             threadId: props.threadId,
             copiedRowId,
             expandedWorkRows,

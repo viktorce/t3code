@@ -4,6 +4,7 @@ import {
   EnvironmentId,
   MessageId,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -11,10 +12,12 @@ import { serializeAssistantCitation } from "./assistantCitations.ts";
 import {
   ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
   collectComposerContextReferences,
+  extractReplyFromMessage,
   formatComposerContextHref,
   isImageReferencesOnly,
   parseComposerContextHref,
   projectComposerContextForProvider,
+  responseContextRecord,
   restoreAttachmentOnlyBootstrapPrompt,
   stripAttachmentOnlyBootstrapPrompt,
   threadContextRecord,
@@ -22,6 +25,8 @@ import {
   threadLinkContextReferences,
   toComposerContextId,
   toKindScopedComposerContextId,
+  withReplyContext,
+  withReplyReference,
 } from "./composerContextReferences.ts";
 
 const ctx = (value: string) => value as ComposerContextId;
@@ -625,5 +630,62 @@ describe("threadLinkContextReferences", () => {
       () => undefined,
     );
     expect(pasted).toEqual({ text, records: [] });
+  });
+});
+
+describe("response reply helpers", () => {
+  const makeReply = (text = "Done.") =>
+    responseContextRecord({
+      citation: {
+        version: 1,
+        environmentId: EnvironmentId.make("environment-1"),
+        threadId: ThreadId.make("thread-1"),
+        messageId: MessageId.make("message-1"),
+        text,
+        start: 0,
+        end: text.length,
+        prefix: "",
+        suffix: "",
+      },
+      itemId: TurnItemId.make("item-1"),
+      subagents: [],
+    });
+
+  it("shortens a long reply label without splitting an emoji", () => {
+    const record = makeReply(`${"a".repeat(63)}😀 trailing`);
+    expect(record.label).toBe("a".repeat(63));
+  });
+
+  it("prepends the reply reference once and round-trips through extractReplyFromMessage", () => {
+    const reply = makeReply("First answer");
+    const serializedText = withReplyReference("Follow up", reply);
+    expect(serializedText).toBe(
+      `[First answer](t3-context://v1/response/${reply.contextId}) Follow up`,
+    );
+    // Already-referenced prompts do not duplicate the chip.
+    expect(withReplyReference(serializedText, reply)).toBe(serializedText);
+    expect(withReplyReference("", reply)).toBe(
+      `[First answer](t3-context://v1/response/${reply.contextId})`,
+    );
+
+    const threadRecord = threadContextRecord(
+      { environmentId: EnvironmentId.make("environment-1"), threadId: ThreadId.make("thread-2") },
+      "Other",
+    );
+    const serializedContext = withReplyContext({ version: 1, records: [threadRecord] }, reply);
+    expect(serializedContext?.records).toEqual([threadRecord, reply]);
+    expect(withReplyContext(serializedContext, reply)).toBe(serializedContext);
+
+    expect(extractReplyFromMessage(serializedText, serializedContext)).toEqual({
+      text: "Follow up",
+      context: { version: 1, records: [threadRecord] },
+      replyTo: reply,
+    });
+    // An unreferenced response record stays untouched rather than becoming a reply banner.
+    expect(extractReplyFromMessage("Plain text", serializedContext)).toEqual({
+      text: "Plain text",
+      context: serializedContext,
+      replyTo: undefined,
+    });
   });
 });

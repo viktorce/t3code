@@ -1,5 +1,8 @@
 import { markdownMathRanges } from "@t3tools/shared/markdownMath";
-import { createAssistantTextSelector } from "@t3tools/shared/assistantCitations";
+import {
+  captureAssistantTextOpening,
+  createAssistantTextSelector,
+} from "@t3tools/shared/assistantCitations";
 import {
   splitCodexArtifactTemplateMarkdown,
   renderCodexInlineDirectivesAsMarkdown,
@@ -117,4 +120,12 @@ export function collectMobileAssistantTextSelectors(markdown: string, path: stri
     const selector = createAssistantTextSelector(fullText, start, start + quote.length);
     return selector ? [{ selector: { ...selector, text }, index, count: matches.length }] : [];
   });
+}
+
+export function captureMobileAssistantMessageOpening(markdown: string) {
+  const rendered = citationSegments(markdown)
+    .map((segment) => segment.text)
+    .filter((text) => text.trim().length > 0)
+    .join("\n");
+  return captureAssistantTextOpening(rendered || markdown);
 }

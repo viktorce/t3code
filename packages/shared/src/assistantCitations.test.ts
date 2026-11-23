@@ -12,6 +12,7 @@ import {
 import {
   assistantCitationLabel,
   assistantCitationsToPlainText,
+  captureAssistantTextOpening,
   collectAssistantCitations,
   expandAssistantCitationsForProvider,
   formatAssistantCitationHref,
@@ -280,5 +281,24 @@ describe("assistant citation references", () => {
         "",
       ].join("\n"),
     );
+  });
+
+  it("captures the opening of an assistant response without splitting an emoji", () => {
+    expect(captureAssistantTextOpening("   \n\t  ")).toBeNull();
+    expect(captureAssistantTextOpening("  Hello world  ")).toEqual({
+      text: "Hello world",
+      start: 1,
+      end: 12,
+      prefix: " ",
+      suffix: " ",
+    });
+
+    const long = `${"a".repeat(299)}😀 trailing text`;
+    const opening = captureAssistantTextOpening(long);
+    expect(opening).not.toBeNull();
+    expect(opening?.text).toBe("a".repeat(299));
+    expect(opening?.start).toBe(0);
+    expect(opening?.end).toBe(299);
+    expect(opening?.suffix.startsWith("😀")).toBe(true);
   });
 });

@@ -133,12 +133,13 @@ import type { StatusTone } from "../../components/StatusPill";
 import {
   captureComposerDraftInsertion,
   getComposerDraftSnapshot,
+  setComposerDraftReplyTo,
   setFreshSessionPending,
   insertComposerDraftText,
 } from "../../state/use-composer-drafts";
 import { assistantCitationDraftWithinLimit } from "../../lib/composerContext";
 import { serializeAssistantCitation } from "@t3tools/shared/assistantCitations";
-import type { AssistantCitation } from "@t3tools/contracts";
+import type { AssistantCitation, ResponseContextRecord } from "@t3tools/contracts";
 import { RenderErrorBoundary, RenderFailureView } from "../../components/RenderErrorBoundary";
 import {
   ANDROID_READING_MAX_WIDTH,
@@ -215,6 +216,7 @@ import { ThreadFeed, type ThreadFeedHistoryControls } from "./ThreadFeed";
 import { WorkspaceMutationIdProvider } from "./WorkspaceMutationIdProvider";
 import { useThreadTurnSubagents } from "./ThreadAgentsSheet";
 import { ComposerQueuedEditBanner } from "./ComposerQueuedEdit";
+import { ComposerReplyBanner } from "./ComposerReplyBanner";
 import { useThreadQueuedCount } from "./ThreadQueueControl";
 import { ThreadGuestShareBar } from "./ThreadGuestShareBar";
 import { ThreadSideChatsRow } from "./ThreadSideChatsRow";
@@ -1442,6 +1444,11 @@ function ThreadDetailBody(
     insertComposerDraftText(props.composerDraftKey, value, target);
     composerEditorRef.current?.focus();
   };
+  const handleReplyToResponse = (response: ResponseContextRecord) => {
+    if (!canCiteAssistantText || props.composerDraftKey === null) return;
+    setComposerDraftReplyTo(props.composerDraftKey, response);
+    composerEditorRef.current?.focus();
+  };
 
   const handleUseArtifactTemplate = (template: CodexArtifactTemplate) => {
     const draftMessage =
@@ -1586,6 +1593,7 @@ function ThreadDetailBody(
                   onIsAtEndChange={setIsAtEnd}
                   skills={selectedProviderSkills}
                   onCiteAssistantText={canCiteAssistantText ? handleCiteAssistantText : undefined}
+                  onReplyToResponse={canCiteAssistantText ? handleReplyToResponse : undefined}
                   onUseArtifactTemplate={handleUseArtifactTemplate}
                 />
               </ColumnWidth>
@@ -1871,6 +1879,15 @@ function ThreadDetailBody(
                           />
                         ) : null}
                       </Animated.View>
+                    ) : null}
+                    {!props.draftMode &&
+                    !isProviderSubagent &&
+                    !composerSlotHidden &&
+                    props.composerDraftKey !== null ? (
+                      <ComposerReplyBanner
+                        draftKey={props.composerDraftKey}
+                        disabled={props.isSavingQueuedEdit}
+                      />
                     ) : null}
                   </ComposerPanels>
                 </View>

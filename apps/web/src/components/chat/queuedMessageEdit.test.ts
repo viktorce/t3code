@@ -7,7 +7,10 @@ import {
   TurnItemId,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { threadContextRecord } from "@t3tools/shared/composerContextReferences";
+import {
+  responseContextRecord,
+  threadContextRecord,
+} from "@t3tools/shared/composerContextReferences";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 import {
   DraftId,
@@ -16,7 +19,7 @@ import {
   type ComposerImageAttachment,
 } from "../../composerDraftStore";
 import { readAttachmentUpload, useAttachmentUploadStore } from "../../lib/attachmentUploadQueue";
-import { environmentContextRecord, responseContextRecord } from "../../lib/composerContextRecords";
+import { environmentContextRecord } from "../../lib/composerContextRecords";
 import { formatInlineContextReference } from "../../lib/composerContextReferences";
 import {
   matchRestorableQueuedAttachment,
