@@ -3,6 +3,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
+  DEFAULT_MAX_TERMINAL_BUFFER_BYTES,
   DEFAULT_TERMINAL_ID,
   ProjectId,
   ThreadId,
@@ -51,6 +52,7 @@ import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.t
 import * as TerminalManager from "./Manager.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import { makePrepareTerminalLaunch } from "../workspace/restoreMissingWorktree.ts";
+import { layerNoTaskFolders } from "../orchestration-v2/ProviderTurnStartService.testkit.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import { terminalOutputStream } from "./OutputProtocol.ts";
 import * as PtyAdapter from "@t3tools/shared/PtyAdapter";
@@ -487,6 +489,155 @@ it("restores bounded history across append compaction, clears and split Unicode"
   expect(persisted).toBe("z".repeat(maxBytes));
 });
 
+it("stops holding a control sequence that outgrows its limit", () => {
+  const limit = DEFAULT_MAX_TERMINAL_BUFFER_BYTES;
+  // No final byte for a CSI and no terminator for a string.
+  const digits = "0123456789 123\r\n".repeat(64);
+  // The next ESC cuts this query short. History leaves it out, so the replay cannot answer it.
+  const leftOpen = "\u001b]4;1;?";
+  // The terminal runs the carriage returns and line feeds inside a CSI while it waits for the
+  // final byte.
+  const lineBreaks = (fed: string) => fed.replaceAll(/[^\r\n]/g, "");
+  // The last UTF-8 byte of U+20805 is 0x85, NEL, which ends a CSI or a string other than OSC.
+  // History replays it as ESC E.
+  const splitCodePoint = ["\ud842", "\udc05"];
+  for (const { name, open, filler = digits, end, history } of [
+    {
+      name: "DCS, split code point",
+      open: `${leftOpen}\u001bPstuck`,
+      end: splitCodePoint,
+      history: () => "\u001bE",
+    },
+    // Each piece's U+0090 ends the sequence before it and opens a DCS that the piece drops.
+    {
+      name: "DCS opened by U+0090",
+      open: "\u001b[",
+      filler: `\u0090${"y".repeat(limit)}`,
+      end: ["\u001b", "\\"],
+      history: () => "",
+    },
+    { name: "OSC, BEL", open: "\u001b]0;", end: ["\u0007"], history: () => "" },
+    {
+      name: "OSC, ESC",
+      open: "\u001b]0;",
+      end: ["\u001b[31m"],
+      history: () => "\u001b[31m",
+    },
+    {
+      name: "CSI, final byte",
+      open: `${leftOpen}\u001b[`,
+      end: ["\n6n"],
+      history: (fed: string) => `${lineBreaks(fed)}\n`,
+    },
+    // History must be back in ground after a drop, as the live terminal is.
+    {
+      name: "CSI after a title the next ESC cuts short",
+      open: ["\u001b]0;title", "\u001b["],
+      end: ["31m"],
+      history: (fed: string) => `\u001b]0;title\u001b\\${lineBreaks(fed)}`,
+    },
+    {
+      name: "OSC after a lone ESC",
+      open: ["\u001b", "\u001b]0;"],
+      end: ["\u0007\u009a"],
+      history: () => "\u009a",
+    },
+    {
+      name: "CSI, CAN",
+      open: "\u001b[",
+      end: ["\u0018"],
+      history: (fed: string) => `${lineBreaks(fed)}`,
+    },
+    {
+      name: "CSI, U+0090",
+      open: "\u001b[",
+      end: ["\n\u0090kept\u001b\\"],
+      history: (fed: string) => `${lineBreaks(fed)}\n\u001bPkept\u001b\\`,
+    },
+    // An ESC abandons the CSI and starts a sequence that is kept.
+    {
+      name: "CSI, ESC",
+      open: "\u001b[",
+      end: ["\n\u001b[31m"],
+      history: (fed: string) => `${lineBreaks(fed)}\n\u001b[31m`,
+    },
+    {
+      name: "CSI, split code point",
+      open: "\u001b[",
+      end: ["\n", ...splitCodePoint],
+      history: (fed: string) => `${lineBreaks(fed)}\n\u001bE`,
+    },
+  ]) {
+    let held = "";
+    let visible = "";
+    const feed = (data: string) => {
+      const sanitized = TerminalManager.sanitizeTerminalHistoryChunk(held, data);
+      held = sanitized.pendingControlSequence;
+      visible += sanitized.visibleText;
+    };
+    const fed = filler.repeat(Math.ceil(limit / filler.length) + 2);
+
+    feed("before\n");
+    for (const data of [open].flat()) feed(data);
+    for (let offset = 0; offset < fed.length; offset += filler.length) {
+      feed(fed.slice(offset, offset + filler.length));
+    }
+    expect(held.length, name).toBeLessThanOrEqual(4);
+
+    for (const data of end) feed(data);
+    feed("after\n");
+    expect(held, name).toBe("");
+    expect(visible, name).toBe(`before\n${history(fed)}after\n`);
+  }
+
+  // Held text of exactly the limit stays held, and one more code unit passes the limit. Output
+  // before it in the same chunk is kept, and so is a last code unit that may begin the end. A C1
+  // introducer counts as its ESC form.
+  const afterOutput = (data: string) =>
+    TerminalManager.sanitizeTerminalHistoryChunk("", `before\n${data}`);
+  const string = "\u001b]".padEnd(limit, "0");
+  const csi = "\u001b[".padEnd(limit, "0");
+  for (const atLimit of [string, csi]) {
+    expect(afterOutput(atLimit), atLimit.slice(0, 2)).toEqual({
+      visibleText: "before\n",
+      pendingControlSequence: atLimit,
+    });
+  }
+  // A sequence that ends in the chunk where it passes the limit is kept whole.
+  for (const ended of [`${string}0\u0007`, `${csi}0m`]) {
+    expect(afterOutput(ended), `${ended.slice(0, 2)} ends`).toEqual({
+      visibleText: `before\n${ended}`,
+      pendingControlSequence: "",
+    });
+  }
+  expect(afterOutput(`${string}\u001b`), "string past the limit").toEqual({
+    visibleText: "before\n",
+    pendingControlSequence: "\u0018\u001b]\u001b",
+  });
+  expect(afterOutput(`\u001b[\u009b${csi.slice(2)}\ud842`), "CSI past the limit").toEqual({
+    visibleText: "before\n",
+    pendingControlSequence: "\u0018\u001b[\ud842",
+  });
+  expect(afterOutput(`${string}\ud842`), "string past the limit, high surrogate").toEqual({
+    visibleText: "before\n",
+    pendingControlSequence: "\u0018\u001b]\ud842",
+  });
+  // libghostty ignores intermediates past the fourth, so an escape sequence keeps the first four.
+  const escape = '\u001b!"#$';
+  expect(afterOutput(`${escape}%`), "escape sequence past the limit").toEqual({
+    visibleText: "before\n",
+    pendingControlSequence: escape,
+  });
+  expect(TerminalManager.sanitizeTerminalHistoryChunk(escape, "&'"), "escape stays cut").toEqual({
+    visibleText: "",
+    pendingControlSequence: escape,
+  });
+  expect(TerminalManager.sanitizeTerminalHistoryChunk(escape, "&'B"), "escape ends").toEqual({
+    visibleText: `${escape}&'B`,
+    pendingControlSequence: "",
+  });
+});
+
 it.layer(
   Layer.mergeAll(
     NodeServices.layer,
@@ -533,6 +684,7 @@ it.layer(
               Layer.mock(ProjectService.ProjectService)({
                 getById: () => Effect.succeedSome({ workspaceRoot: baseDir } as never),
               }),
+              layerNoTaskFolders,
               Layer.mock(GitWorkflowService.GitWorkflowService)({
                 pruneWorktrees: () => Effect.void,
                 listLocalBranchNames: () => Effect.succeed(["feature"]),
@@ -991,6 +1143,31 @@ it.layer(
           true,
         ]);
       }),
+  );
+
+  it.effect("reports whether any terminal session for a thread has an active subprocess", () =>
+    Effect.gen(function* () {
+      const { manager } = yield* createManager(5, {
+        processTable: Effect.succeed([
+          { pid: 9000, ppid: 1, name: "zsh" },
+          { pid: 100, ppid: 9000, name: "zsh" },
+          { pid: 9001, ppid: 1, name: "zsh" },
+          { pid: 200, ppid: 9001, name: "node" },
+          { pid: 9002, ppid: 1, name: "zsh" },
+          { pid: 300, ppid: 9002, name: "node" },
+        ]),
+      }).pipe(Effect.provide(layerWithHostPlatform("linux")));
+      yield* manager.open(openInput({ terminalId: "idle", threadId: "thread-idle" }));
+      yield* manager.open(openInput({ terminalId: "dev-server", threadId: "thread-active" }));
+      yield* manager.open(
+        openInput({ terminalId: "managed-dev", threadId: "thread-managed", stopOnSettle: true }),
+      );
+
+      expect(yield* manager.hasActiveSubprocess({ threadId: "thread-none" })).toBe(false);
+      expect(yield* manager.hasActiveSubprocess({ threadId: "thread-managed" })).toBe(false);
+      expect(yield* manager.hasActiveSubprocess({ threadId: "thread-idle" })).toBe(false);
+      expect(yield* manager.hasActiveSubprocess({ threadId: "thread-active" })).toBe(true);
+    }),
   );
 
   it.effect.each([
@@ -1581,7 +1758,7 @@ it.layer(
     }),
   );
 
-  it.effect("strips replayable CSI and DCS traffic while preserving setters", () =>
+  it.effect("strips replayable CSI, DCS and OSC traffic while preserving setters", () =>
     Effect.gen(function* () {
       const { manager, ptyAdapter } = yield* createManager();
       yield* manager.open(openInput());
@@ -1597,7 +1774,13 @@ it.layer(
       // BEL is DCS payload, not a terminator: only ST ends the string.
       process.emitData("\u001bP$qm\u0007hidden\u001b\\\u001bP+q544e\u0007hidden\u001b\\");
       process.emitData('\u001b[!p\u001b["p\u001b[4 q\u001b[u');
+      // Ghostty sets a colour beside a query, skips an LF, an empty field and a last index with no
+      // colour in an OSC, and runs an OSC that CAN ends or that the next ESC cuts short.
+      process.emitData("\u001b]4;1;red;2;?\u0007\u001b]0;t\u001b]\n4;1;?;;2;?;3\u0018\u001b]4;3;?");
       process.emitData("\u001b]0;x\u001b\u001b[?2026$p");
+      // A long setter split across chunks is kept whole, up to the clients' replay budget.
+      process.emitData(`\u001b[${"0".repeat(70_000)}`);
+      process.emitData("31mX");
       process.emitData("done\n");
 
       yield* manager.close({ threadId: "thread-1" });
@@ -1605,7 +1788,9 @@ it.layer(
       const reopened = yield* manager.open(openInput());
       expect(
         reopened.history.startsWith(
-          'prompt \u001b[!p\u001b["p\u001b[4 q\u001b[u\u001b]0;x\u001bdone\n',
+          'prompt \u001b[!p\u001b["p\u001b[4 q\u001b[u' +
+            "\u001b]4;1;red;2;?\u0007\u001b]0;t\u001b\\\u001b]0;x\u001b\\" +
+            `\u001b[${"0".repeat(70_000)}31mXdone\n`,
         ),
       ).toBe(true);
     }),

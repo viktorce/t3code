@@ -242,6 +242,8 @@ export class TerminalManager extends Context.Service<
       readonly terminalId?: string;
     }) => Effect.Effect<void>;
 
+    readonly hasActiveSubprocess: (input: { readonly threadId: string }) => Effect.Effect<boolean>;
+
     readonly subscribe: (
       listener: (event: TerminalEvent) => Effect.Effect<void>,
       registerCleanup?: (stop: () => void) => void,
@@ -1272,6 +1274,19 @@ function shouldStripOscSequence(content: string): boolean {
   return /^(10|11|12);(?:\?|rgb:)/.test(content);
 }
 
+// An OSC 4 whose every colour is "?" reports palette entries and sets none. Ghostty skips C0
+// controls inside an OSC, runs one that CAN or SUB ends, and reads the pairs past empty fields.
+function isOscPaletteQuery(content: string): boolean {
+  if (!/^[\0-\x1f]*4/.test(content) || !content.includes("?")) return false;
+  const [code, ...pairs] = content
+    .replace(/[\0-\x1f]+/g, "")
+    .split(";")
+    .filter((field) => field !== "");
+  return (
+    code === "4" && pairs.length > 1 && pairs.every((field, at) => at % 2 === 0 || field === "?")
+  );
+}
+
 function stripStringTerminator(value: string): string {
   if (value.endsWith("\u001b\\")) {
     return value.slice(0, -2);
@@ -1330,7 +1345,7 @@ function findStringEnd(
   input: string,
   start: number,
   isOsc: boolean,
-): { end: number; c1?: { effect: C1Effect; index: number } } | null {
+): { end: number; cut?: true; c1?: { effect: C1Effect; index: number } } | null {
   for (let index = start; index < input.length; index += 1) {
     const codePoint = input.charCodeAt(index);
     if ((isOsc && codePoint === 0x07) || isControlSequenceCancel(codePoint)) {
@@ -1339,7 +1354,7 @@ function findStringEnd(
     // Like xterm.js, an ESC that does not start ST ends the string and begins the next sequence.
     if (codePoint === 0x1b) {
       if (index + 1 >= input.length) return null;
-      return { end: input.charCodeAt(index + 1) === 0x5c ? index + 2 : index };
+      return input.charCodeAt(index + 1) === 0x5c ? { end: index + 2 } : { end: index, cut: true };
     }
     if (codePoint >= 0x80 && !isOsc) {
       const fullCodePoint = input.codePointAt(index) ?? codePoint;
@@ -1379,7 +1394,19 @@ function findEscapeSequenceEndIndex(input: string, start: number): number | null
 const HISTORY_SEQUENCE_START = /\u001b/;
 const NEXT_HISTORY_SEQUENCE_START = new RegExp(HISTORY_SEQUENCE_START.source, "g");
 
-function sanitizeTerminalHistoryChunk(
+// Clients keep this much output and drop a sequence their cut goes through, so none of them
+// could replay a longer string or CSI whole.
+const MAX_HELD_SEQUENCE_LENGTH = DEFAULT_MAX_TERMINAL_BUFFER_BYTES;
+// The ESC and four intermediates. libghostty ignores every intermediate past the fourth, so a
+// held escape sequence cut to this replays the same.
+const MAX_HELD_ESCAPE_LENGTH = 5;
+// Leads the held text of a string or CSI that outgrew its limit, whose rest stays out of history.
+// Only its introducer is still held, with a final ESC or high surrogate that may begin its end.
+// Other held text starts with ESC, so this marker never collides with it. Nothing stands in for
+// the dropped ESC: closing what history left open could dispatch a query on replay.
+const DROPPED_SEQUENCE = "\u0018";
+
+export function sanitizeTerminalHistoryChunk(
   pendingControlSequence: string,
   data: string,
 ): { visibleText: string; pendingControlSequence: string } {
@@ -1387,9 +1414,11 @@ function sanitizeTerminalHistoryChunk(
     return { visibleText: data, pendingControlSequence: "" };
   }
 
-  const input = `${pendingControlSequence}${data}`;
-  // Only the pending prefix's final ESC can begin a terminator split across chunks.
-  const pendingScanStart = Math.max(0, pendingControlSequence.length - 1);
+  const resumesDropped = pendingControlSequence.startsWith(DROPPED_SEQUENCE);
+  const input = `${pendingControlSequence.slice(resumesDropped ? 1 : 0)}${data}`;
+  // Only the pending prefix's final code unit, an ESC or a high surrogate, can begin an end split
+  // across chunks.
+  const pendingScanStart = Math.max(0, input.length - data.length - 1);
   let visibleText = "";
   let index = 0;
   // Set when a C1 code point began the sequence at `index`: the ESC form that stands in for it.
@@ -1406,6 +1435,7 @@ function sanitizeTerminalHistoryChunk(
       // Empty for a sequence the input introduces itself, which starts with ESC at `index`.
       const prefix = c1Introducer;
       c1Introducer = "";
+      const dropped = resumesDropped && index === 0;
       const contentStart = prefix.length > 0 ? index : index + 2;
       const nextCodePoint = (prefix || input).charCodeAt(prefix.length > 0 ? 1 : index + 1);
       if (Number.isNaN(nextCodePoint)) {
@@ -1413,19 +1443,21 @@ function sanitizeTerminalHistoryChunk(
       }
 
       if (nextCodePoint === 0x5b) {
-        let cursor = contentStart;
+        // A held CSI has no final byte, ESC or C1 control, so only its last code unit is rescanned.
+        let cursor = index === 0 ? Math.max(contentStart, pendingScanStart) : contentStart;
         // Inside a CSI Ghostty executes 0x00-0x0F and ignores DEL and 0x10-0x1F, which it would
         // print in ground state. None join the parameters; only executed ones survive a strip.
-        let body = "";
-        let executedControls = "";
+        const executedControls = () =>
+          input.slice(contentStart, cursor).replace(/[^\x00-\x0f]+/g, "");
         while (cursor < input.length) {
           const cursorCodePoint = input.charCodeAt(cursor);
           const cancelled = isControlSequenceCancel(cursorCodePoint);
           if (cancelled || isCsiFinalByte(cursorCodePoint)) {
-            if (cancelled || !shouldStripCsiSequence(body, input[cursor] ?? "")) {
+            const body = input.slice(contentStart, cursor).replace(/[^\x20-\x7e]+/g, "");
+            if (!dropped && (cancelled || !shouldStripCsiSequence(body, input[cursor] ?? ""))) {
               append(prefix + input.slice(index, cursor + 1));
             } else {
-              append(executedControls);
+              append(executedControls());
             }
             index = cursor + 1;
             break;
@@ -1437,10 +1469,10 @@ function sanitizeTerminalHistoryChunk(
             if (c1) {
               // The CSI ends here undispatched, so it is kept only when the terminal is back in
               // ground with nothing to answer.
-              if (c1.next.length === 0 && !c1.query) {
+              if (!dropped && c1.next.length === 0 && !c1.query) {
                 append(prefix + input.slice(index, end));
               } else {
-                append(executedControls + c1.safe);
+                append(executedControls() + c1.safe);
               }
               c1Introducer = c1.next;
               index = end;
@@ -1451,19 +1483,24 @@ function sanitizeTerminalHistoryChunk(
           }
           // An ESC abandons the CSI and starts the next sequence, which may be stripped.
           if (cursorCodePoint === 0x1b) {
-            append(executedControls);
+            append(executedControls());
             index = cursor;
             break;
-          }
-          if (cursorCodePoint < 0x10) {
-            executedControls += input[cursor];
-          } else if (cursorCodePoint >= 0x20 && cursorCodePoint !== 0x7f) {
-            body += input[cursor];
           }
           cursor += 1;
         }
         if (cursor >= input.length) {
-          return { visibleText, pendingControlSequence: prefix + input.slice(index) };
+          const held = prefix + input.slice(index);
+          if (dropped || held.length > MAX_HELD_SEQUENCE_LENGTH) {
+            // The terminal has run these already, so history takes them as they come. A final
+            // high surrogate may begin a code point whose bytes end the CSI.
+            const surrogate = /[\ud800-\udbff]$/.exec(held)?.[0] ?? "";
+            return {
+              visibleText: visibleText + executedControls(),
+              pendingControlSequence: `${DROPPED_SEQUENCE}\u001b[${surrogate}`,
+            };
+          }
+          return { visibleText, pendingControlSequence: held };
         }
         continue;
       }
@@ -1480,18 +1517,32 @@ function sanitizeTerminalHistoryChunk(
           nextCodePoint === 0x5d,
         );
         if (stringEnd === null) {
-          return { visibleText, pendingControlSequence: prefix + input.slice(index) };
+          const held = prefix + input.slice(index);
+          if (dropped || held.length > MAX_HELD_SEQUENCE_LENGTH) {
+            // A final ESC may begin the terminator, and a final high surrogate a code point
+            // whose bytes end the string.
+            const terminatorStart = /[\u001b\ud800-\udbff]$/.exec(held)?.[0] ?? "";
+            return {
+              visibleText,
+              pendingControlSequence: DROPPED_SEQUENCE + held.slice(0, 2) + terminatorStart,
+            };
+          }
+          return { visibleText, pendingControlSequence: held };
         }
-        const { end, c1 } = stringEnd;
+        const { end, cut, c1 } = stringEnd;
         const content = stripStringTerminator(
           prefix.slice(2) + input.slice(contentStart, c1?.index ?? end),
         );
         const strip =
+          dropped ||
           (nextCodePoint === 0x5d && shouldStripOscSequence(content)) ||
+          (nextCodePoint === 0x5d && isOscPaletteQuery(content)) ||
           (nextCodePoint === 0x50 && shouldStripDcsSequence(content));
         if (c1 === undefined || (!strip && c1.effect.next.length === 0 && !c1.effect.query)) {
+          // ST ends a string the next ESC cut short, as that ESC did, so history is in ground
+          // whatever becomes of the next sequence.
           if (!strip) {
-            append(prefix + input.slice(index, end));
+            append(prefix + input.slice(index, end) + (cut ? "\u001b\\" : ""));
           }
         } else {
           // ST stands in for a code point that cannot be replayed as it came.
@@ -1505,10 +1556,15 @@ function sanitizeTerminalHistoryChunk(
 
       const escapeSequenceEndIndex = findEscapeSequenceEndIndex(input, index + 1);
       if (escapeSequenceEndIndex === null) {
-        return { visibleText, pendingControlSequence: input.slice(index) };
+        // Only intermediates follow this ESC.
+        return {
+          visibleText,
+          pendingControlSequence: input.slice(index, index + MAX_HELD_ESCAPE_LENGTH),
+        };
       }
-      // ESC Z (DECID) is the legacy primary device attributes query.
-      if (nextCodePoint !== 0x5a) {
+      // ESC Z (DECID) is the legacy primary device attributes query. A second ESC restarts the
+      // sequence, so the first does nothing.
+      if (nextCodePoint !== 0x5a && input.charCodeAt(escapeSequenceEndIndex) !== 0x1b) {
         append(input.slice(index, escapeSequenceEndIndex));
       }
       index = escapeSequenceEndIndex;
@@ -2764,15 +2820,12 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
               .join(":"),
           };
     // POSIX node-pty can return a PTY before exec fails, so validate before accepting a candidate.
+    const shellCommand = candidate.shell.includes("/")
+      ? path.resolve(session.cwd, candidate.shell)
+      : candidate.shell;
     const executable =
       platform !== "win32"
-        ? resolveExecutable(
-            candidate.shell.includes("/")
-              ? path.resolve(session.cwd, candidate.shell)
-              : candidate.shell,
-            platform,
-            lookupEnv,
-          )
+        ? yield* Effect.promise(async () => resolveExecutable(shellCommand, platform, lookupEnv))
         : candidate.shell;
     if (executable === undefined) {
       return yield* trySpawn(
@@ -3938,6 +3991,29 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     yield* closeIdle(input);
   });
 
+  const hasActiveSubprocess = Effect.fn("terminal.hasActiveSubprocess")(function* (input: {
+    readonly threadId: string;
+  }) {
+    // Settling closes stopOnSettle sessions, so their work must not hold settlement back.
+    const running = (yield* sessionsForThread(input.threadId)).filter(
+      (session): session is TerminalSessionState & { pid: number } =>
+        session.status === "running" && Number.isInteger(session.pid) && !session.stopOnSettle,
+    );
+    if (running.length === 0) return false;
+    const { inspector } = yield* acquireSubprocessInspector(
+      platform === "win32" ? CLOSE_IDLE_QUERY_TIMEOUT.win32 : CLOSE_IDLE_QUERY_TIMEOUT.posix,
+    );
+    // A failed process query falls back to the last poll's answer.
+    const isActive = (session: (typeof running)[number]) =>
+      Result.isFailure(inspector)
+        ? Effect.succeed(session.hasRunningSubprocess)
+        : inspector.success(session.pid, session.shell).pipe(
+            Effect.map((result) => result.hasRunningSubprocess),
+            Effect.orElseSucceed(() => session.hasRunningSubprocess),
+          );
+    return Option.isSome(yield* Effect.findFirst(running, isActive));
+  });
+
   return TerminalManager.of({
     open,
     getShell,
@@ -3951,6 +4027,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     close,
     closeIdle,
     closeOnSettle,
+    hasActiveSubprocess,
     subscribe,
     subscribeMetadata,
   });
