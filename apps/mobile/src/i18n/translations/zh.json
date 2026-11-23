@@ -4179,6 +4179,8 @@
   "b2ec7dff2dde1179": "正在编辑排队消息",
   "d0e9c30191edf07e": "回复 {titles}",
   "22182c7abff35fe3": "正在回复",
+  "3e5e844496bf455d": "回复 {titles}：{preview}",
+  "fcab22f8cf7943f5": "正在回复：{preview}",
   "794050bb4d783744": "取消回复",
   "faeebf9714efe741": "关闭用量限制",
   "3b83ac2c1d6ca9ae": "用量限制",

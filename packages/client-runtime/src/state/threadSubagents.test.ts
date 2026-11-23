@@ -1,22 +1,15 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
-  EnvironmentId,
-  MessageId,
   NodeId,
   ProviderDriverKind,
   ProviderInstanceId,
   RunId,
   ThreadId,
-  TurnItemId,
   type OrchestrationV2Subagent,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
-import {
-  deriveResponseSubagents,
-  deriveThreadTurnSubagents,
-  resolveSubagentPillSegment,
-} from "./threadSubagents.ts";
+import { deriveThreadTurnSubagents, resolveSubagentPillSegment } from "./threadSubagents.ts";
 
 const at = (iso: string) => DateTime.makeUnsafe(iso);
 
@@ -329,102 +322,5 @@ describe("deriveThreadTurnSubagents", () => {
       label: "1 done",
       accessibilityLabel: "1 agent done",
     });
-  });
-});
-
-describe("deriveResponseSubagents", () => {
-  const environmentId = EnvironmentId.make("env-local");
-  const remoteEnvId = EnvironmentId.make("env-remote");
-  const localChildId = ThreadId.make("thread-child-local");
-  const remoteChildId = ThreadId.make("thread-child-remote");
-  const earlierChildId = ThreadId.make("thread-child-earlier");
-  const noticeOnlyChildId = ThreadId.make("thread-child-notice-only");
-  const responseItemId = TurnItemId.make("item-response");
-
-  it("collects only subagents from inputs immediately preceding the response with title fallbacks", () => {
-    const projection = {
-      visibleTurnItems: [
-        {
-          sourceItemId: TurnItemId.make("item-earlier-input"),
-          item: {
-            type: "user_message",
-            messageId: MessageId.make("msg-earlier"),
-            senderThreadId: earlierChildId,
-          },
-        },
-        {
-          sourceItemId: TurnItemId.make("item-earlier-answer"),
-          item: { type: "assistant_message" },
-        },
-        {
-          sourceItemId: TurnItemId.make("item-subagent-local"),
-          item: {
-            type: "subagent",
-            subagentId: NodeId.make("task-local"),
-            childThreadId: localChildId,
-          },
-        },
-        {
-          sourceItemId: TurnItemId.make("item-completion-msg"),
-          item: {
-            type: "user_message",
-            messageId: MessageId.make("msg-completion"),
-          },
-        },
-        {
-          sourceItemId: TurnItemId.make("item-notice"),
-          item: {
-            type: "notification",
-            source: {
-              childThreadId: noticeOnlyChildId,
-              taskIds: [NodeId.make("task-remote")],
-            },
-          },
-        },
-        {
-          sourceItemId: responseItemId,
-          item: { type: "assistant_message" },
-        },
-      ],
-      subagents: [
-        subagent({
-          id: "task-earlier",
-          childThreadId: earlierChildId,
-          title: "Earlier",
-        }),
-        subagent({
-          id: "task-local",
-          childThreadId: localChildId,
-          title: null,
-        }),
-        subagent({
-          id: "task-remote",
-          childThreadId: null,
-          title: null,
-          remoteChild: {
-            environmentId: remoteEnvId,
-            threadId: remoteChildId,
-            label: "Remote",
-            title: "Remote researcher",
-          },
-        }),
-      ],
-      messages: [
-        {
-          id: MessageId.make("msg-completion"),
-          delegatedCompletion: { taskIds: [NodeId.make("task-local")] },
-        },
-      ],
-    } as unknown as Parameters<typeof deriveResponseSubagents>[0];
-
-    const subagents = deriveResponseSubagents(projection, environmentId, responseItemId, (ref) =>
-      ref.threadId === localChildId ? "Shell Title" : undefined,
-    );
-
-    expect(subagents).toEqual([
-      { threadId: noticeOnlyChildId, title: "Agent" },
-      { threadId: remoteChildId, environmentId: remoteEnvId, title: "Remote researcher" },
-      { threadId: localChildId, title: "Shell Title" },
-    ]);
   });
 });

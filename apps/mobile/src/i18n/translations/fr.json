@@ -4176,6 +4176,8 @@
   "b2ec7dff2dde1179": "Modification d’un message en file d’attente",
   "d0e9c30191edf07e": "Réponse à {titles}",
   "22182c7abff35fe3": "En réponse à",
+  "3e5e844496bf455d": "Réponse à {titles} : {preview}",
+  "fcab22f8cf7943f5": "En réponse à : {preview}",
   "794050bb4d783744": "Annuler la réponse",
   "faeebf9714efe741": "Masquer les limites d’utilisation",
   "3b83ac2c1d6ca9ae": "Limites d’utilisation",

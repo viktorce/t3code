@@ -2975,7 +2975,7 @@ describe("mobile composer drafts", () => {
     );
     expect(cleared[draftKey]).toBeUndefined();
 
-    // Merging restores a reply into an empty draft, keeps an existing reply, and undoes cleanly.
+    // Merging restores a reply into an empty draft, preserves a conflicting incoming reply inline, and undoes cleanly.
     const snapshot: ComposerDraft = { text: "", attachments: [] };
     const merged = mergeComposerDraftContentState({ [draftKey]: snapshot }, draftKey, {
       text: "Follow up",
@@ -2983,12 +2983,30 @@ describe("mobile composer drafts", () => {
       replyTo: first,
     });
     expect(merged[draftKey]?.replyTo).toEqual(first);
-    const keptExisting = mergeComposerDraftContentState(merged, draftKey, {
+    const conflictMerged = mergeComposerDraftContentState(merged, draftKey, {
       text: "More",
       attachments: [],
       replyTo: second,
     });
-    expect(keptExisting[draftKey]?.replyTo).toEqual(first);
+    expect(conflictMerged[draftKey]?.replyTo).toEqual(first);
+    expect(conflictMerged[draftKey]?.text).toBe(
+      `Follow up\n\n[Second answer](t3-context://v1/response/${second.contextId}) More`,
+    );
+    expect(conflictMerged[draftKey]?.context?.records).toEqual([second]);
+    const conflictUndone = undoComposerDraftMergeState(
+      {
+        [draftKey]: {
+          ...conflictMerged[draftKey]!,
+          text: `${conflictMerged[draftKey]!.text} tail`,
+        },
+      },
+      draftKey,
+      merged[draftKey]!,
+      conflictMerged[draftKey]!,
+    );
+    expect(conflictUndone[draftKey]?.text).toBe("Follow up tail");
+    expect(conflictUndone[draftKey]?.replyTo).toEqual(first);
+    expect(conflictUndone[draftKey]?.context).toBeUndefined();
 
     const undone = undoComposerDraftMergeState(
       { [draftKey]: { ...merged[draftKey]!, text: `${merged[draftKey]!.text} extra` } },

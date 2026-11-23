@@ -947,7 +947,7 @@ export function useThreadComposerState(input: {
       (error: unknown) => {
         // Restore with uncapped append; capped merge could drop attachments added during the failed write.
         void mergeComposerDraftContent(threadKey, {
-          text: draft.text,
+          text,
           context: draft.context,
           ...(draft.replyTo ? { replyTo: draft.replyTo } : {}),
           attachments: [],

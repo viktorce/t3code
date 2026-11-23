@@ -43,6 +43,8 @@ import {
   formatComposerContextReference,
   sanitizeComposerContextLabel,
   replaceComposerContextReferences,
+  withReplyContext,
+  withReplyReference,
 } from "@t3tools/shared/composerContextReferences";
 import { imageMimeType } from "@t3tools/shared/image";
 import { videoMimeType } from "@t3tools/shared/video";
@@ -1357,32 +1359,26 @@ export async function restoreCloudComposerDrafts(accountId: string): Promise<voi
       for (const [key, draft] of Object.entries(saved.drafts)) {
         const existing = current[key];
         const attachmentIds = new Set(existing?.attachments.map((attachment) => attachment.id));
-        restored[key] = existing
-          ? {
-              ...draft,
-              ...existing,
-              text: mergeComposerDraftText(existing.text, draft.text),
-              context: mergeReferencedComposerContext(
-                mergeComposerDraftText(existing.text, draft.text),
-                draft.context,
-                existing.context,
-              ),
-              ...(existing.replyTo || draft.replyTo
-                ? { replyTo: existing.replyTo ?? draft.replyTo }
-                : {}),
-              // A concurrent import must not lose files, even above the send limit.
-              attachments: [
-                ...existing.attachments,
-                ...draft.attachments.filter((attachment) => !attachmentIds.has(attachment.id)),
-              ],
-              importedShareIds: [
-                ...new Set([
-                  ...(existing.importedShareIds ?? []),
-                  ...(draft.importedShareIds ?? []),
-                ]),
-              ],
-            }
-          : draft;
+        if (existing) {
+          const incoming = mergeIncomingReply(existing.replyTo, draft);
+          const text = mergeComposerDraftText(existing.text, incoming.text);
+          restored[key] = {
+            ...draft,
+            ...existing,
+            text,
+            context: mergeReferencedComposerContext(text, incoming.context, existing.context),
+            // A concurrent import must not lose files, even above the send limit.
+            attachments: [
+              ...existing.attachments,
+              ...draft.attachments.filter((attachment) => !attachmentIds.has(attachment.id)),
+            ],
+            importedShareIds: [
+              ...new Set([...(existing.importedShareIds ?? []), ...(draft.importedShareIds ?? [])]),
+            ],
+          };
+        } else {
+          restored[key] = draft;
+        }
       }
       return restored;
     });
@@ -1818,6 +1814,29 @@ function mergeReferencedComposerContext(
   return referencedComposerContext(text, { version: 1, records: [...records.values()] });
 }
 
+/**
+ * When a merge carries a reply to a different response than the one already in the bar,
+ * preserve the incoming reply inline on the merged text and context instead of dropping it.
+ */
+function mergeIncomingReply(
+  existingReplyTo: ResponseContextRecord | undefined,
+  incoming: {
+    readonly text: string;
+    readonly context?: OrchestrationMessageContext;
+    readonly replyTo?: ResponseContextRecord;
+  },
+) {
+  const conflict =
+    existingReplyTo !== undefined &&
+    incoming.replyTo !== undefined &&
+    existingReplyTo.contextId !== incoming.replyTo.contextId;
+  return {
+    text: conflict ? withReplyReference(incoming.text, incoming.replyTo!) : incoming.text,
+    context: conflict ? withReplyContext(incoming.context, incoming.replyTo!) : incoming.context,
+    replyTo: existingReplyTo ?? incoming.replyTo,
+  };
+}
+
 export function mergeComposerDraftContentState(
   current: Record<string, ComposerDraft>,
   draftKey: string,
@@ -1839,16 +1858,17 @@ export function mergeComposerDraftContentState(
     0,
     PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   );
-  const text = mergeComposerDraftText(existing.text, content.text);
-  const context = mergeReferencedComposerContext(text, existing.context, content.context);
-  const replyTo = existing.replyTo ?? content.replyTo;
+  const incoming = mergeIncomingReply(existing.replyTo, content);
+  const text = mergeComposerDraftText(existing.text, incoming.text);
+  const context = mergeReferencedComposerContext(text, existing.context, incoming.context);
+  const replyTo = incoming.replyTo;
   const importedShareIds = content.sourceShareId
     ? [...(existing.importedShareIds ?? []), content.sourceShareId]
     : existing.importedShareIds;
   if (
     text === existing.text &&
     attachments.length === existing.attachments.length &&
-    content.context === undefined &&
+    incoming.context === undefined &&
     replyTo === existing.replyTo &&
     importedShareIds === existing.importedShareIds
   ) {
@@ -1961,11 +1981,13 @@ export function undoComposerDraftMergeState(
       : insertedText.length > 0 && existing.text.endsWith(insertedText)
         ? existing.text.slice(0, existing.text.length - insertedText.length)
         : existing.text;
+  const { replyTo: _existingReplyTo, ...existingRest } = existing;
+  const nextReplyTo = undoSetting("replyTo");
   const draft = {
-    ...existing,
+    ...existingRest,
     text,
     context: referencedComposerContext(text, existing.context),
-    replyTo: undoSetting("replyTo"),
+    ...(nextReplyTo !== undefined ? { replyTo: nextReplyTo } : {}),
     attachments: existing.attachments.filter(
       (attachment) => !insertedAttachmentIds.has(attachment.id),
     ),

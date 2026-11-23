@@ -985,40 +985,63 @@ describe("thread outbox recovery rollback", () => {
     }),
   );
 
-  it.effect("restores a rejected reply into draft.replyTo instead of an inline chip", () =>
-    Effect.gen(function* () {
-      const reply = responseContextRecord({
-        citation: {
-          version: 1,
-          environmentId: EnvironmentId.make("environment-1"),
-          threadId: ThreadId.make("thread-1"),
-          messageId: MessageId.make("assistant-1"),
-          text: "First answer",
-          start: 0,
-          end: 12,
-          prefix: "",
-          suffix: "",
-        },
-        itemId: TurnItemId.make("item-1"),
-        subagents: [],
-      });
-      const message = {
-        ...queuedMessage({
-          messageId: "message-reply-restore",
-          text: withReplyReference("Follow up", reply),
-        }),
-        context: withReplyContext(undefined, reply),
-      };
-      const threadKey = `${message.environmentId}:${message.threadId}`;
-      yield* Effect.promise(() => harness.manager.enqueue(message));
+  it.effect(
+    "restores a rejected reply into draft.replyTo, or inline when another reply is already pending",
+    () =>
+      Effect.gen(function* () {
+        const makeReply = (messageId: string, text: string) =>
+          responseContextRecord({
+            citation: {
+              version: 1,
+              environmentId: EnvironmentId.make("environment-1"),
+              threadId: ThreadId.make("thread-1"),
+              messageId: MessageId.make(messageId),
+              text,
+              start: 0,
+              end: text.length,
+              prefix: "",
+              suffix: "",
+            },
+            itemId: TurnItemId.make(`item-${messageId}`),
+            subagents: [],
+          });
+        const first = makeReply("assistant-1", "First answer");
+        const second = makeReply("assistant-2", "Second answer");
+        const message = {
+          ...queuedMessage({
+            messageId: "message-reply-restore",
+            text: withReplyReference("Follow up", first),
+          }),
+          context: withReplyContext(undefined, first),
+        };
+        const threadKey = `${message.environmentId}:${message.threadId}`;
+        yield* Effect.promise(() => harness.manager.enqueue(message));
 
-      expect(yield* restoreRejectedQueuedMessage(message, "rejected")).toBe("restored");
+        expect(yield* restoreRejectedQueuedMessage(message, "rejected")).toBe("restored");
 
-      const restored = composerDrafts.getComposerDraftSnapshot(threadKey);
-      expect(restored.text).toBe("Follow up");
-      expect(restored.replyTo).toEqual(reply);
-      expect(restored.context).toBeUndefined();
-    }),
+        const restored = composerDrafts.getComposerDraftSnapshot(threadKey);
+        expect(restored.text).toBe("Follow up");
+        expect(restored.replyTo).toEqual(first);
+        expect(restored.context).toBeUndefined();
+
+        // Restoring a second rejected reply while the first is pending keeps both instead of dropping either.
+        const secondMessage = {
+          ...queuedMessage({
+            messageId: "message-reply-restore-conflict",
+            text: withReplyReference("Other follow up", second),
+          }),
+          context: withReplyContext(undefined, second),
+        };
+        yield* Effect.promise(() => harness.manager.enqueue(secondMessage));
+        expect(yield* restoreRejectedQueuedMessage(secondMessage, "rejected")).toBe("restored");
+
+        const merged = composerDrafts.getComposerDraftSnapshot(threadKey);
+        expect(merged.replyTo).toEqual(first);
+        expect(merged.text).toBe(
+          `Follow up\n\n[Second answer](t3-context://v1/response/${second.contextId}) Other follow up`,
+        );
+        expect(merged.context?.records).toEqual([second]);
+      }),
   );
 
   it.effect("leaves no error when the restored text is resent before recovery finishes", () =>
