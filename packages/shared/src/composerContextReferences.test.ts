@@ -13,9 +13,11 @@ import {
   ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
   collectComposerContextReferences,
   formatComposerContextHref,
+  formatComposerContextReference,
   isImageReferencesOnly,
   parseComposerContextHref,
   projectComposerContextForProvider,
+  removeComposerContextReference,
   responseContextRecord,
   restoreAttachmentOnlyBootstrapPrompt,
   stripAttachmentOnlyBootstrapPrompt,
@@ -649,5 +651,21 @@ describe("responseContextRecord", () => {
       subagents: [],
     });
     expect(record.label).toBe("a".repeat(63));
+  });
+});
+
+describe("removeComposerContextReference", () => {
+  it("removes an expired terminal chip by its kind-scoped id, not the producer id", () => {
+    const contextId = toKindScopedComposerContextId("terminal", "term-1");
+    expect(contextId).toBe("terminal_term-1");
+
+    const reference = formatComposerContextReference({
+      kind: "terminal",
+      contextId,
+      label: "Terminal 1 lines 3-4",
+    });
+    const prompt = `prose ${reference} tail`;
+    expect(removeComposerContextReference(prompt, "term-1").prompt).toBe(prompt);
+    expect(removeComposerContextReference(prompt, contextId).prompt).toBe("prose tail");
   });
 });

@@ -9,10 +9,6 @@ import {
 import * as Schema from "effect/Schema";
 import { upgradeLegacyContextMessage } from "@t3tools/shared/composerContextLegacy";
 
-import {
-  formatInlineContextReference,
-  removeInlineContextReference,
-} from "./composerContextReferences";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -249,25 +245,6 @@ describe("composerContextRecords", () => {
     const record = previewAnnotationContextRecord({ ...annotation, comment: "c".repeat(8_001) });
     expect(record.comment.endsWith("… truncated …")).toBe(true);
     expect(decodeMessageContext({ version: 1, records: [record] }).records).toEqual([record]);
-  });
-
-  it("removes an expired terminal chip by its kind-scoped id, not the producer id", () => {
-    const context = {
-      id: "term-1",
-      threadId: ThreadId.make("t"),
-      createdAt: "2026-01-01T00:00:00.000Z",
-      terminalId: "default",
-      terminalLabel: "Terminal 1",
-      lineStart: 3,
-      lineEnd: 4,
-      text: "boom",
-    };
-    const reference = terminalContextReference(context);
-    expect(reference.contextId).toBe("terminal_term-1");
-
-    const prompt = `prose ${formatInlineContextReference(reference)} tail`;
-    expect(removeInlineContextReference(prompt, context.id).prompt).toBe(prompt);
-    expect(removeInlineContextReference(prompt, reference.contextId).prompt).toBe("prose tail");
   });
 
   it("clamps oversized review and terminal selections so the records still encode", () => {
