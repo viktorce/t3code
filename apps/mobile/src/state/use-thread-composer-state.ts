@@ -594,7 +594,7 @@ export function useThreadComposerState(input: {
         edit: {
           messageId: edit.messageId,
           attachments: payload.attachments,
-          ...(payload.context ? { context: payload.context } : {}),
+          context: payload.context,
         },
       },
     });

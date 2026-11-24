@@ -1353,14 +1353,35 @@ const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
       ...selector,
     });
   };
-  const replyTarget =
-    props.onReplyToResponse && props.citationSource && props.reply
-      ? {
-          onReplyToResponse: props.onReplyToResponse,
-          citationSource: props.citationSource,
-          reply: props.reply,
+  // Built from primitives so it stays the same across row renders; code blocks read it through
+  // context, and a new handler would re-render every block the markdown view kept.
+  const onReplyToResponse = props.onReplyToResponse;
+  const replyThreadId = props.citationSource?.threadId;
+  const replyMessageId = props.citationSource?.messageId;
+  const replyItemId = props.reply?.sourceItemId;
+  const onReply =
+    onReplyToResponse && replyThreadId && replyMessageId && replyItemId
+      ? () => {
+          const opening = captureMobileAssistantMessageOpening(liveMarkdown);
+          if (!opening) return;
+          onReplyToResponse(
+            responseContextRecord({
+              citation: {
+                version: 1,
+                environmentId: props.environmentId,
+                threadId: replyThreadId,
+                messageId: replyMessageId,
+                ...opening,
+              },
+              itemId: replyItemId,
+              subagents: readResponseSubagents(
+                scopeThreadRef(props.environmentId, replyThreadId),
+                replyItemId,
+              ),
+            }),
+          );
         }
-      : null;
+      : undefined;
   const models = useModelMentions(props.environmentId, props.markdown);
   const threadIcons = useThreadChipIcons(props.environmentId, liveMarkdown);
   const withGallery = useFilePreviewGallery();
@@ -1405,30 +1426,7 @@ const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
               }
             : undefined
         }
-        onReply={
-          replyTarget
-            ? () => {
-                const opening = captureMobileAssistantMessageOpening(liveMarkdown);
-                if (!opening) return;
-                replyTarget.onReplyToResponse(
-                  responseContextRecord({
-                    citation: {
-                      version: 1,
-                      environmentId: props.environmentId,
-                      threadId: replyTarget.citationSource.threadId,
-                      messageId: replyTarget.citationSource.messageId,
-                      ...opening,
-                    },
-                    itemId: replyTarget.reply.sourceItemId,
-                    subagents: readResponseSubagents(
-                      scopeThreadRef(props.environmentId, replyTarget.citationSource.threadId),
-                      replyTarget.reply.sourceItemId,
-                    ),
-                  }),
-                );
-              }
-            : undefined
-        }
+        onReply={onReply}
         markdownStyles={props.markdownStyles}
         linkHandlers={linkHandlers}
         onUseArtifactTemplate={props.onUseArtifactTemplate}

@@ -193,7 +193,10 @@ export function endQueuedRunEdit(
  */
 export const startQueuedRunEditSave = queuedRunEdits.startSave;
 
-/** Attachments replace wholesale; resend kept server attachments with uploads in composer order. */
+/**
+ * Attachments and context replace wholesale, as on web: an omitted context keeps the stored
+ * records, so a save with none left sends an empty list.
+ */
 export function resolveQueuedEditPayload(input: {
   readonly edit: QueuedRunEdit;
   readonly draftContext: OrchestrationMessageContext | undefined;
@@ -201,7 +204,7 @@ export function resolveQueuedEditPayload(input: {
   readonly uploaded: ReadonlyArray<ChatAttachment | UploadChatAttachment>;
 }): {
   readonly attachments: ReadonlyArray<ChatAttachment | UploadChatAttachment>;
-  readonly context: OrchestrationMessageContext | undefined;
+  readonly context: OrchestrationMessageContext;
 } {
   const attachments = [...input.edit.existingAttachments, ...input.uploaded];
   const rebound = uploadedComposerContext(
@@ -209,7 +212,7 @@ export function resolveQueuedEditPayload(input: {
     input.draftAttachments,
     input.uploaded,
   );
-  if (rebound === undefined) return { attachments, context: undefined };
+  if (rebound === undefined) return { attachments, context: { version: 1, records: [] } };
   const liveIds = new Set(
     attachments.flatMap((attachment) =>
       "id" in attachment && attachment.id ? [attachment.id] : [],
@@ -218,8 +221,5 @@ export function resolveQueuedEditPayload(input: {
   const records = rebound.records.filter(
     (record) => !("attachmentId" in record) || liveIds.has(record.attachmentId),
   );
-  return {
-    attachments,
-    context: records.length > 0 ? { version: 1, records } : undefined,
-  };
+  return { attachments, context: { version: 1, records } };
 }

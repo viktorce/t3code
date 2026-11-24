@@ -130,6 +130,17 @@ describe("resolveQueuedEditPayload", () => {
     expect(payload.attachments.map((attachment) => attachment.id)).toEqual(["kept"]);
     expect(payload.context?.records).toEqual([expect.objectContaining({ attachmentId: "kept" })]);
   });
+
+  it("sends an empty context when the edit removed every record, so the stored ones go", () => {
+    const payload = resolveQueuedEditPayload({
+      edit: edit([]),
+      draftContext: undefined,
+      draftAttachments: [],
+      uploaded: [],
+    });
+
+    expect(payload.context).toEqual({ version: 1, records: [] });
+  });
 });
 
 describe("beginQueuedRunEdit", () => {
