@@ -344,7 +344,13 @@ function withReplyContext(
   if (existing.some((record) => record.contextId === replyTo.contextId)) {
     return context!;
   }
-  return { version: 1, records: [...existing, replyTo] };
+  // Where web's message builder puts it: ahead of preview annotations and attachment records.
+  const after = existing.findIndex(
+    (record) =>
+      record.kind === "preview-annotation" || record.kind === "image" || record.kind === "file",
+  );
+  const at = after === -1 ? existing.length : after;
+  return { version: 1, records: [...existing.slice(0, at), replyTo, ...existing.slice(at)] };
 }
 
 export function withReplyMessage(

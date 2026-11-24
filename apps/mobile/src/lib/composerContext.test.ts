@@ -442,10 +442,14 @@ describe("host context compatibility", () => {
     const first = makeReply("assistant-1", "First answer");
     const second = makeReply("assistant-2", "Second answer");
 
-    const single = withReplyMessage("Follow up", { version: 1, records: [terminal] }, first);
+    const single = withReplyMessage(
+      "Follow up",
+      { version: 1, records: [terminal, annotation] },
+      first,
+    );
     expect(single).toEqual({
       text: `[First answer](t3-context://v1/response/${first.contextId}) Follow up`,
-      context: { version: 1, records: [terminal, first] },
+      context: { version: 1, records: [terminal, first, annotation] },
     });
     expect(withReplyMessage(single.text, single.context, first)).toEqual(single);
 
