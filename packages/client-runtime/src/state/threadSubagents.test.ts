@@ -10,6 +10,7 @@ import {
   TurnItemId,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2NotificationSource,
+  type OrchestrationV2RemoteTaskChild,
   type OrchestrationV2Subagent,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -353,20 +354,47 @@ describe("deriveResponseSubagents", () => {
         ...source,
       } satisfies OrchestrationV2NotificationSource,
     });
+  // Older history loads no `subagents`, so its tasks are known only from these items.
+  const taskItem = (
+    id: string,
+    childThreadId: ThreadId | null,
+    remoteChild?: OrchestrationV2RemoteTaskChild,
+  ) =>
+    row(id, {
+      type: "subagent",
+      subagentId: NodeId.make(id),
+      childThreadId,
+      ...(remoteChild ? { remoteChild } : {}),
+    } satisfies Pick<
+      Extract<ThreadStructureTurnItem, { type: "subagent" }>,
+      "type" | "subagentId" | "childThreadId" | "remoteChild"
+    >);
 
   it("collects the children named by the inputs just before the response", () => {
     const titles: Record<string, string> = {
       "env:child-local": "Stale title",
       "env:child-unloaded": "Read title",
       "linked:remote-child": "Remote read title",
+      "env:item-child": "Item read title",
     };
     const found = deriveResponseSubagents(
       {
         visibleTurnItems: [
+          taskItem("item-local", ThreadId.make("item-child")),
+          taskItem("item-remote", null, {
+            environmentId: EnvironmentId.make("linked"),
+            threadId: ThreadId.make("item-remote-child"),
+            label: "linked",
+            title: "Item remote title",
+          }),
           notice("older", { childThreadId: ThreadId.make("old-child") }),
           row("earlier", { type: "assistant_message" }),
           notice("notice", {
-            taskIds: [NodeId.make("task-local")],
+            taskIds: [
+              NodeId.make("task-local"),
+              NodeId.make("item-local"),
+              NodeId.make("item-remote"),
+            ],
             childThreadId: ThreadId.make("child-unloaded"),
           }),
           row("delivery", { senderThreadId: ThreadId.make("child-blank") }),
@@ -415,6 +443,8 @@ describe("deriveResponseSubagents", () => {
       { threadId: "child-blank", title: "Agent" },
       { threadId: "child-unloaded", title: "Read title" },
       { threadId: "child-local", title: "Reviewer" },
+      { threadId: "item-child", title: "Item read title" },
+      { threadId: "item-remote-child", environmentId: "linked", title: "Item remote title" },
     ]);
   });
 });
