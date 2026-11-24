@@ -452,6 +452,13 @@ describe("host context compatibility", () => {
       context: { version: 1, records: [terminal, first, annotation] },
     });
     expect(withReplyMessage(single.text, single.context, first)).toEqual(single);
+    const file = { ...image, kind: "file" as const, contextId: ComposerContextId.make("file-1") };
+    for (const attachment of [image, file]) {
+      expect(
+        withReplyMessage("Look", { version: 1, records: [terminal, attachment] }, first).context
+          ?.records,
+      ).toEqual([terminal, first, attachment]);
+    }
 
     // Records hold [second, first] (inline conflict merged before send), while [first] leads text.
     const inlineSecond = withReplyMessage("More", undefined, second);

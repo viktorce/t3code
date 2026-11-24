@@ -344,7 +344,7 @@ function withReplyContext(
   if (existing.some((record) => record.contextId === replyTo.contextId)) {
     return context!;
   }
-  // Where web's message builder puts it: ahead of preview annotations and attachment records.
+  // Web's buildMessageContext puts the reply ahead of preview annotations and attachment records.
   const after = existing.findIndex(
     (record) =>
       record.kind === "preview-annotation" || record.kind === "image" || record.kind === "file",
