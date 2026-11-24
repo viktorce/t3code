@@ -3027,4 +3027,40 @@ describe("mobile composer drafts", () => {
     expect(undone[draftKey]?.text).toBe(" extra");
     expect(undone[draftKey]?.replyTo).toBeUndefined();
   });
+
+  it("restores a signed-out draft's reply, keeping a different live reply in the bar", async () => {
+    const load = vi.spyOn(threadOutboxManager, "load").mockResolvedValue(true);
+    onTestFinished(() => load.mockRestore());
+    await waitForComposerDraftsLoaded();
+    const plainKey = "reply-environment:cloud-plain";
+    const repliedKey = "reply-environment:cloud-replied";
+    const saved = makeReply(plainKey, "assistant-1", "Saved answer");
+    const live = makeReply(repliedKey, "assistant-2", "Live answer");
+    const incoming = makeReply(repliedKey, "assistant-3", "Incoming answer");
+    appAtomRegistry.set(composerDraftsAtom, {
+      [plainKey]: { text: "Live", attachments: [] },
+      [repliedKey]: { text: "Live", attachments: [], replyTo: live },
+    });
+    appAtomRegistry.set(composerCloudDraftsAtom, {
+      accountId: null,
+      signedOut: {
+        account: {
+          drafts: {
+            [plainKey]: { text: "Saved", attachments: [], replyTo: saved },
+            [repliedKey]: { text: "Saved", attachments: [], replyTo: incoming },
+          },
+          queuedMessages: [],
+        },
+      },
+    });
+    await restoreCloudComposerDrafts("account");
+
+    expect(getComposerDraftSnapshot(plainKey).replyTo).toEqual(saved);
+    const replied = getComposerDraftSnapshot(repliedKey);
+    expect(replied.replyTo).toEqual(live);
+    expect(replied.text).toBe(
+      `Live\n\n[Incoming answer](t3-context://v1/response/${incoming.contextId}) Saved`,
+    );
+    expect(replied.context?.records).toEqual([incoming]);
+  });
 });

@@ -8,10 +8,13 @@ import {
   RunId,
   ThreadId,
   TurnItemId,
+  type OrchestrationV2ConversationMessage,
+  type OrchestrationV2NotificationSource,
   type OrchestrationV2Subagent,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
+import type { ThreadStructureTurnItem } from "./models.ts";
 import { v2MessageRow } from "./orchestrationV2TestFixtures.ts";
 import {
   deriveResponseSubagents,
@@ -334,12 +337,22 @@ describe("deriveThreadTurnSubagents", () => {
 });
 
 describe("deriveResponseSubagents", () => {
-  const row = (id: string, fields: Record<string, unknown>) => {
+  const row = (id: string, fields: object) => {
     const base = v2MessageRow(id, 0);
-    return { ...base, item: { ...base.item, ...fields } } as never;
+    return { ...base, item: { ...base.item, ...fields } as ThreadStructureTurnItem };
   };
-  const notice = (id: string, source: Record<string, unknown>) =>
-    row(id, { type: "notification", source: { kind: "delegated_task", taskIds: [], ...source } });
+  const notice = (
+    id: string,
+    source: Partial<Extract<OrchestrationV2NotificationSource, { kind: "delegated_task" }>>,
+  ) =>
+    row(id, {
+      type: "notification",
+      source: {
+        kind: "delegated_task",
+        taskIds: [],
+        ...source,
+      } satisfies OrchestrationV2NotificationSource,
+    });
 
   it("collects the children named by the inputs just before the response", () => {
     const titles: Record<string, string> = {
@@ -350,10 +363,13 @@ describe("deriveResponseSubagents", () => {
     const found = deriveResponseSubagents(
       {
         visibleTurnItems: [
-          notice("older", { childThreadId: "old-child" }),
+          notice("older", { childThreadId: ThreadId.make("old-child") }),
           row("earlier", { type: "assistant_message" }),
-          notice("notice", { taskIds: ["task-local"], childThreadId: "child-unloaded" }),
-          row("delivery", { senderThreadId: "child-blank" }),
+          notice("notice", {
+            taskIds: [NodeId.make("task-local")],
+            childThreadId: ThreadId.make("child-unloaded"),
+          }),
+          row("delivery", { senderThreadId: ThreadId.make("child-blank") }),
           row("response", { type: "assistant_message" }),
         ],
         subagents: [
@@ -378,8 +394,15 @@ describe("deriveResponseSubagents", () => {
         messages: [
           {
             id: MessageId.make("delivery"),
-            delegatedCompletion: { taskIds: [NodeId.make("task-remote")] },
-          } as never,
+            delegatedCompletion: {
+              parentRunId: RunId.make("run-1"),
+              generation: 1,
+              taskIds: [NodeId.make("task-remote")],
+            },
+          } satisfies Pick<
+            OrchestrationV2ConversationMessage,
+            "id" | "delegatedCompletion"
+          > as never,
         ],
       },
       EnvironmentId.make("env"),

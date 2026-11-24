@@ -1369,6 +1369,7 @@ export async function restoreCloudComposerDrafts(accountId: string): Promise<voi
             ...existing,
             text,
             context: mergeReferencedComposerContext(text, incoming.context, existing.context),
+            ...(incoming.replyTo ? { replyTo: incoming.replyTo } : {}),
             // A concurrent import must not lose files, even above the send limit.
             attachments: [
               ...existing.attachments,

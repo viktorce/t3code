@@ -663,14 +663,15 @@ describe("mobile task permissions", () => {
 
     vi.clearAllMocks();
     state.enqueue.mockRejectedValueOnce(new Error("disk full"));
-    expect(await composer.onSendMessage()).toBe("message");
-    await Promise.resolve();
-    expect(state.mergeDraft).toHaveBeenCalledExactlyOnceWith("secondary:thread", {
-      text: "Follow up",
-      context: undefined,
-      replyTo,
-      attachments: [],
+    const restored = new Promise((resolve) => {
+      state.mergeDraft.mockImplementationOnce(async (...args) => resolve(args));
     });
+    expect(await composer.onSendMessage()).toBe("message");
+    expect(await restored).toEqual([
+      "secondary:thread",
+      { text: "Follow up", context: undefined, replyTo, attachments: [] },
+    ]);
+    expect(state.mergeDraft).toHaveBeenCalledOnce();
   });
 
   it("queues a goal command with the thread's settings and leaves the draft alone", async () => {

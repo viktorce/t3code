@@ -26,6 +26,7 @@ import {
   threadLinkContextReferences,
   toComposerContextId,
   toKindScopedComposerContextId,
+  withReplyReference,
 } from "./composerContextReferences.ts";
 
 const ctx = (value: string) => value as ComposerContextId;
@@ -651,6 +652,32 @@ describe("responseContextRecord", () => {
       subagents: [],
     });
     expect(record.label).toBe("a".repeat(63));
+  });
+
+  it("leads the prompt with the reply's reference once", () => {
+    const text = "First answer";
+    const record = responseContextRecord({
+      citation: {
+        version: 1,
+        environmentId: EnvironmentId.make("environment-1"),
+        threadId: ThreadId.make("thread-1"),
+        messageId: MessageId.make("message-1"),
+        text,
+        start: 0,
+        end: text.length,
+        prefix: "",
+        suffix: "",
+      },
+      itemId: TurnItemId.make("item-1"),
+      subagents: [],
+    });
+    const reference = formatComposerContextReference({
+      kind: "response",
+      contextId: record.contextId,
+      label: record.label,
+    });
+    expect(withReplyReference("Follow up", record)).toBe(`${reference} Follow up`);
+    expect(withReplyReference(`Follow up ${reference}`, record)).toBe(`Follow up ${reference}`);
   });
 });
 
