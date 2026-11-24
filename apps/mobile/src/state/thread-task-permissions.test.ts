@@ -13,9 +13,14 @@ import {
   type ModelSelection,
   type OrchestrationMessageContext,
   type OrchestrationV2ThreadProjection,
+  type ResponseContextRecord,
   type RuntimeMode,
   type ServerConfig,
 } from "@t3tools/contracts";
+import {
+  formatComposerContextReference,
+  responseContextRecord,
+} from "@t3tools/shared/composerContextReferences";
 import {
   v2Now,
   v2Projection,
@@ -37,6 +42,7 @@ const state = vi.hoisted(() => ({
     text: "Keep my draft",
     attachments: [] as DraftComposerImageAttachment[],
     context: undefined as OrchestrationMessageContext | undefined,
+    replyTo: undefined as ResponseContextRecord | undefined,
     modelSelection: undefined as ModelSelection | undefined,
     runtimeMode: undefined as RuntimeMode | undefined,
   },
@@ -259,6 +265,7 @@ beforeEach(() => {
     text: "Keep my draft",
     attachments: [],
     context: undefined,
+    replyTo: undefined,
     modelSelection: undefined,
     runtimeMode: undefined,
   };
@@ -560,6 +567,54 @@ describe("mobile task permissions", () => {
         text: "Keep my draft",
       }),
     );
+  });
+
+  it("attaches a pending reply on send and restores it if enqueue fails", async () => {
+    state.grantedEnvironments.add("secondary");
+    const replyTo = responseContextRecord({
+      citation: {
+        version: 1,
+        environmentId: EnvironmentId.make("secondary"),
+        threadId: ThreadId.make("thread"),
+        messageId: MessageId.make("assistant"),
+        text: "First answer",
+        start: 0,
+        end: 12,
+        prefix: "",
+        suffix: "",
+      },
+      itemId: TurnItemId.make("reply"),
+      subagents: [],
+    });
+    const reference = formatComposerContextReference({
+      kind: "response",
+      contextId: replyTo.contextId,
+      label: replyTo.label,
+    });
+    state.draft = { ...state.draft, text: "Follow up", replyTo };
+    const composer = useThreadComposerState(NO_SIDE_CHATS);
+
+    expect(await composer.onSendMessage()).toBe("message");
+    expect(state.enqueue).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        text: `${reference} Follow up`,
+        context: { version: 1, records: [replyTo] },
+      }),
+    );
+    expect(state.clearDraft).toHaveBeenCalledExactlyOnceWith("secondary:thread", {
+      deferAttachmentCleanup: true,
+    });
+
+    vi.clearAllMocks();
+    state.enqueue.mockRejectedValueOnce(new Error("disk full"));
+    expect(await composer.onSendMessage()).toBe("message");
+    await Promise.resolve();
+    expect(state.mergeDraft).toHaveBeenCalledExactlyOnceWith("secondary:thread", {
+      text: "Follow up",
+      context: undefined,
+      replyTo,
+      attachments: [],
+    });
   });
 
   it("queues a goal command with the thread's settings and leaves the draft alone", async () => {
