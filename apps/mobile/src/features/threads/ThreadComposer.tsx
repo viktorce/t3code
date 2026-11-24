@@ -314,7 +314,11 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
   const onResumeQueue = props.onResumeQueue;
   const [resumingQueue, setResumingQueue] = useState(false);
   const showResumeAction =
-    !hasContent && !showStopAction && queuedEdit === null && onResumeQueue !== null;
+    !hasContent &&
+    draftReplyTo === undefined &&
+    !showStopAction &&
+    queuedEdit === null &&
+    onResumeQueue !== null;
   const handleResumeQueue = async () => {
     if (resumingQueue || onResumeQueue === null) return;
     setResumingQueue(true);

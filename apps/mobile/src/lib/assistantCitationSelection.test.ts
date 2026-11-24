@@ -118,6 +118,22 @@ it("captures clean rendered openings for replies and falls back when rendered te
     prefix: "",
     suffix: "",
   });
+  const titledFence = '```text title="output.txt"\nhello\n```\n\nDone.';
+  expect(captureMobileAssistantMessageOpening(titledFence)).toEqual({
+    text: "output.txt\nhello\nDone.",
+    start: 0,
+    end: 22,
+    prefix: "",
+    suffix: "",
+  });
+  // Fence titles are not selectable on mobile, so Cite keeps matching without them.
+  expect(collectMobileAssistantTextSelectors(titledFence, "0:0", "Done.")[0]?.selector).toEqual({
+    text: "Done.",
+    start: 6,
+    end: 11,
+    prefix: "hello ",
+    suffix: "",
+  });
   expect(captureMobileAssistantMessageOpening("![diagram](chart.png)")).toEqual({
     text: "![diagram](chart.png)",
     start: 0,

@@ -1,5 +1,5 @@
 import { msg, useGT, useMessages } from "gt-react-native";
-import { useState } from "react";
+import { createContext, useContext, useState } from "react";
 import { Pressable, ScrollView, Text } from "react-native";
 import type { MarkdownStyle } from "react-native-enriched-markdown";
 
@@ -29,6 +29,9 @@ const FENCE_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   xml: "XML",
 };
 
+/** Provided around a markdown view so code blocks read the reply handler without changing `renderers.code`. */
+export const CodeBlockReplyContext = createContext<(() => void) | undefined>(undefined);
+
 // The native block's long-press menu, with its labels and iOS symbols.
 const CODE_MENU_ACTIONS = [
   {
@@ -38,6 +41,12 @@ const CODE_MENU_ACTIONS = [
   },
   { id: "copy-markdown", title: msg("Copy as Markdown"), image: "doc.text" },
 ];
+
+const REPLY_MENU_ACTION = {
+  id: "reply",
+  title: msg("Reply", { $context: "verb, reply to an assistant response" }),
+  image: "arrowshape.turn.up.left",
+};
 
 /** A fence in a language enriched-markdown cannot colour, drawn like its native block. */
 export function HighlightedCodeBlock(props: {
@@ -53,6 +62,7 @@ export function HighlightedCodeBlock(props: {
   const { code, codeStyle, textStyle } = props;
   const gt = useGT();
   const resolve = useMessages();
+  const onReply = useContext(CodeBlockReplyContext);
   const [wrapped, setWrapped] = useState(false);
   const lines = useMarkdownCodeHighlight({
     code,
@@ -90,13 +100,20 @@ export function HighlightedCodeBlock(props: {
       }) ?? code}
     </Text>
   );
+  const menuActions = (onReply ? [...CODE_MENU_ACTIONS, REPLY_MENU_ACTION] : CODE_MENU_ACTIONS).map(
+    (action) => ({ ...action, title: resolve(action.title) }),
+  );
   // Inside the scroller: on iOS an ancestor JS responder disables a ScrollView's panning.
   const content = (
     <Menu
       shouldOpenOnLongPress
-      actions={CODE_MENU_ACTIONS.map((action) => ({ ...action, title: resolve(action.title) }))}
+      actions={menuActions}
       style={{ flexGrow: 1 }}
       onPressAction={({ nativeEvent }) => {
+        if (nativeEvent.event === "reply") {
+          onReply?.();
+          return;
+        }
         copyTextWithHaptic(
           nativeEvent.event === "copy-markdown" ? fencedCodeMarkdown(code, props.fence) : code,
         );

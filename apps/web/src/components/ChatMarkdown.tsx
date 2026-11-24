@@ -224,10 +224,10 @@ import { MarkdownFileLink } from "./chat/MarkdownFileLink";
 import { canUseMarkdownFileShellActions } from "./chat/MarkdownFileLink.logic";
 import { handleMarkdownFragmentClick } from "./chat/markdownFragments";
 import { hastHasText, hastPlainTextDeep, plainHastText } from "./chat/markdownHast.logic";
+import { extractFenceTitle } from "@t3tools/shared/markdownCodeFence";
 import {
   extractCodeBlock,
   extractFenceLanguage,
-  extractFenceTitle,
   extractPreCodeMeta,
   isClosedCodeFence,
   nodeToPlainText,
