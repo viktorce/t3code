@@ -12,7 +12,6 @@ import { serializeAssistantCitation } from "./assistantCitations.ts";
 import {
   ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
   collectComposerContextReferences,
-  extractReplyFromMessage,
   formatComposerContextHref,
   isImageReferencesOnly,
   parseComposerContextHref,
@@ -25,8 +24,6 @@ import {
   threadLinkContextReferences,
   toComposerContextId,
   toKindScopedComposerContextId,
-  withReplyContext,
-  withReplyReference,
 } from "./composerContextReferences.ts";
 
 const ctx = (value: string) => value as ComposerContextId;
@@ -633,9 +630,10 @@ describe("threadLinkContextReferences", () => {
   });
 });
 
-describe("response reply helpers", () => {
-  const makeReply = (text = "Done.") =>
-    responseContextRecord({
+describe("responseContextRecord", () => {
+  it("shortens a long reply label without splitting an emoji", () => {
+    const text = `${"a".repeat(63)}😀 trailing`;
+    const record = responseContextRecord({
       citation: {
         version: 1,
         environmentId: EnvironmentId.make("environment-1"),
@@ -650,42 +648,6 @@ describe("response reply helpers", () => {
       itemId: TurnItemId.make("item-1"),
       subagents: [],
     });
-
-  it("shortens a long reply label without splitting an emoji", () => {
-    const record = makeReply(`${"a".repeat(63)}😀 trailing`);
     expect(record.label).toBe("a".repeat(63));
-  });
-
-  it("prepends the reply reference once and round-trips through extractReplyFromMessage", () => {
-    const reply = makeReply("First answer");
-    const serializedText = withReplyReference("Follow up", reply);
-    expect(serializedText).toBe(
-      `[First answer](t3-context://v1/response/${reply.contextId}) Follow up`,
-    );
-    // Already-referenced prompts do not duplicate the chip.
-    expect(withReplyReference(serializedText, reply)).toBe(serializedText);
-    expect(withReplyReference("", reply)).toBe(
-      `[First answer](t3-context://v1/response/${reply.contextId})`,
-    );
-
-    const threadRecord = threadContextRecord(
-      { environmentId: EnvironmentId.make("environment-1"), threadId: ThreadId.make("thread-2") },
-      "Other",
-    );
-    const serializedContext = withReplyContext({ version: 1, records: [threadRecord] }, reply);
-    expect(serializedContext?.records).toEqual([threadRecord, reply]);
-    expect(withReplyContext(serializedContext, reply)).toBe(serializedContext);
-
-    expect(extractReplyFromMessage(serializedText, serializedContext)).toEqual({
-      text: "Follow up",
-      context: { version: 1, records: [threadRecord] },
-      replyTo: reply,
-    });
-    // An unreferenced response record stays untouched rather than becoming a reply banner.
-    expect(extractReplyFromMessage("Plain text", serializedContext)).toEqual({
-      text: "Plain text",
-      context: serializedContext,
-      replyTo: undefined,
-    });
   });
 });

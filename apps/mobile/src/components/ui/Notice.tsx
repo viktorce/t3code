@@ -8,59 +8,28 @@ import { SymbolView, type AppSymbolName } from "./AppSymbol";
 import { GlassSurface } from "./GlassSurface";
 
 export function Notice(props: {
-  readonly title?: string;
   readonly message: string;
-  readonly messageNumberOfLines?: number;
-  readonly onPress?: () => void;
-  readonly pressAccessibilityLabel?: string;
-  readonly announce?: boolean;
+  readonly action?: {
+    readonly title?: string;
+    readonly accessibilityLabel: string;
+    readonly onPress: () => void;
+  };
   readonly tone?: "default" | "danger";
   readonly icon?: AppSymbolName;
   readonly iconTone?: "default" | "danger";
   readonly floating?: boolean;
   readonly onDismiss?: () => void;
   readonly dismissLabel?: string;
-  readonly dismissDisabled?: boolean;
 }) {
   const gt = useGT();
   const danger = props.tone === "danger";
-  const announce = props.announce ?? true;
+  const hasAction = props.action !== undefined;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- announces the message to VoiceOver through AccessibilityInfo
   useEffect(() => {
-    // Live regions reach TalkBack; VoiceOver needs an explicit announcement.
-    if (announce && Platform.OS === "ios")
+    // Live regions reach TalkBack; VoiceOver needs an explicit announcement for passive notices.
+    if (!hasAction && Platform.OS === "ios")
       AccessibilityInfo.announceForAccessibility(props.message);
-  }, [announce, props.message]);
-
-  const body = (
-    <>
-      {props.title ? (
-        <AppText
-          textRole="caption"
-          className={cn(
-            "font-t3-medium",
-            danger ? "text-danger-foreground" : "text-foreground-muted",
-          )}
-          numberOfLines={1}
-        >
-          {props.title}
-        </AppText>
-      ) : null}
-      <AppText
-        selectable={!props.onPress}
-        textRole="footnote"
-        accessibilityLiveRegion={announce ? "polite" : "none"}
-        numberOfLines={props.messageNumberOfLines}
-        className={cn(
-          !props.title && !props.onPress && "min-w-0 flex-1",
-          danger ? "text-danger-foreground" : "text-foreground",
-          !props.floating && "font-t3-medium",
-        )}
-      >
-        {props.message}
-      </AppText>
-    </>
-  );
+  }, [hasAction, props.message]);
 
   const content = (
     <View className="flex-row items-start gap-3">
@@ -77,28 +46,57 @@ export function Notice(props: {
           />
         </View>
       ) : null}
-      {props.onPress ? (
+      {props.action ? (
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={props.pressAccessibilityLabel}
-          onPress={props.onPress}
+          accessibilityLabel={props.action.accessibilityLabel}
+          onPress={props.action.onPress}
           className="min-w-0 flex-1 active:opacity-70"
         >
-          {body}
+          {props.action.title ? (
+            <AppText
+              textRole="caption"
+              className={cn(
+                "font-t3-medium",
+                danger ? "text-danger-foreground" : "text-foreground-muted",
+              )}
+              numberOfLines={1}
+            >
+              {props.action.title}
+            </AppText>
+          ) : null}
+          <AppText
+            textRole="footnote"
+            numberOfLines={2}
+            className={cn(
+              danger ? "text-danger-foreground" : "text-foreground",
+              !props.floating && "font-t3-medium",
+            )}
+          >
+            {props.message}
+          </AppText>
         </Pressable>
-      ) : props.title ? (
-        <View className="min-w-0 flex-1">{body}</View>
       ) : (
-        body
+        <AppText
+          selectable
+          textRole="footnote"
+          accessibilityLiveRegion="polite"
+          className={cn(
+            "min-w-0 flex-1",
+            danger ? "text-danger-foreground" : "text-foreground",
+            !props.floating && "font-t3-medium",
+          )}
+        >
+          {props.message}
+        </AppText>
       )}
       {props.onDismiss ? (
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={props.dismissLabel ?? gt("Dismiss message")}
-          disabled={props.dismissDisabled}
           onPress={props.onDismiss}
           hitSlop={10}
-          className="min-h-6 min-w-6 items-center justify-center active:opacity-60 disabled:opacity-40"
+          className="min-h-6 min-w-6 items-center justify-center active:opacity-60"
         >
           <SymbolView
             name="xmark"

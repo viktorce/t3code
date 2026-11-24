@@ -446,9 +446,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     onChangeDraftMessage: props.onChangeDraftMessage,
     offersUsageLimits: usageLimitsOffered,
     onUsageLimits:
-      usageLimitsOffered && draftAttachments.length === 0 && draftReplyTo === undefined
-        ? openUsageLimits
-        : undefined,
+      usageLimitsOffered && draftAttachments.length === 0 ? openUsageLimits : undefined,
     onOpenModelPicker: settingsSheetPresentation.open,
     modelOptions: mentionModelOptions,
     modelProviders: props.serverConfig?.providers,

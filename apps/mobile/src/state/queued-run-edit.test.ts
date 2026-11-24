@@ -4,9 +4,9 @@ import {
   ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
   responseContextRecord,
   restoreAttachmentOnlyBootstrapPrompt,
-  withReplyContext,
   withReplyReference,
 } from "@t3tools/shared/composerContextReferences";
+import { withReplyContext } from "../lib/composerContext";
 import {
   ChatAttachmentId,
   ComposerContextId,

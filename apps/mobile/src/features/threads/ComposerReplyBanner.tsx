@@ -22,7 +22,7 @@ export function ComposerReplyBanner(props: {
     ? gt("Replying to {titles}", { titles: subagentTitles })
     : gt("Replying to", { $context: "banner title; the message being replied to follows" });
   const body = assistantCitationLabel(replyTo.citation);
-  const pressAccessibilityLabel = subagentTitles
+  const accessibilityLabel = subagentTitles
     ? gt("Replying to {titles}: {preview}", {
         titles: subagentTitles,
         preview: body,
@@ -40,22 +40,21 @@ export function ComposerReplyBanner(props: {
       exiting={FadeOut.duration(120)}
     >
       <Notice
-        title={title}
         message={body}
-        messageNumberOfLines={2}
         icon="arrowshape.turn.up.left"
         floating
-        announce={false}
-        pressAccessibilityLabel={pressAccessibilityLabel}
-        onPress={() => {
-          requestThreadMessageJump(
-            scopedThreadKey(replyTo.citation.environmentId, replyTo.citation.threadId),
-            replyTo.citation.messageId,
-          );
+        action={{
+          title,
+          accessibilityLabel,
+          onPress: () => {
+            requestThreadMessageJump(
+              scopedThreadKey(replyTo.citation.environmentId, replyTo.citation.threadId),
+              replyTo.citation.messageId,
+            );
+          },
         }}
-        onDismiss={() => setComposerDraftReplyTo(props.draftKey, null)}
+        onDismiss={props.disabled ? undefined : () => setComposerDraftReplyTo(props.draftKey, null)}
         dismissLabel={gt("Cancel reply")}
-        dismissDisabled={props.disabled}
       />
     </Animated.View>
   );

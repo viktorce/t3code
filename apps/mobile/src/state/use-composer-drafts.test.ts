@@ -2933,49 +2933,57 @@ describe("mobile composer drafts", () => {
     expect(composerAttachmentCleanupMocks.remove).not.toHaveBeenCalled();
   });
 
-  it("persists, replaces, clears, merges, and undoes pending replyTo state", () => {
+  const makeReply = (draftKey: string, messageId: string, text: string) => {
+    const [environmentId, threadId] = draftKey.split(":");
+    return responseContextRecord({
+      citation: {
+        version: 1,
+        environmentId: EnvironmentId.make(environmentId!),
+        threadId: ThreadId.make(threadId!),
+        messageId: MessageId.make(messageId),
+        text,
+        start: 0,
+        end: text.length,
+        prefix: "",
+        suffix: "",
+      },
+      itemId: TurnItemId.make(`item-${messageId}`),
+      subagents: [],
+    });
+  };
+
+  it("persists, replaces, and clears pending replyTo state", () => {
     const draftKey = "reply-environment:reply-thread";
-    const makeReply = (messageId: string, text: string) =>
-      responseContextRecord({
-        citation: {
-          version: 1,
-          environmentId: EnvironmentId.make("reply-environment"),
-          threadId: ThreadId.make("reply-thread"),
-          messageId: MessageId.make(messageId),
-          text,
-          start: 0,
-          end: text.length,
-          prefix: "",
-          suffix: "",
-        },
-        itemId: TurnItemId.make(`item-${messageId}`),
-        subagents: [],
-      });
-    const first = makeReply("assistant-1", "First answer");
-    const second = makeReply("assistant-2", "Second answer");
+    const first = makeReply(draftKey, "assistant-1", "First answer");
+    const second = makeReply(draftKey, "assistant-2", "Second answer");
 
     setComposerDraftReplyTo(draftKey, first);
     const saved = getComposerDraftSnapshot(draftKey);
     expect(saved.replyTo).toEqual(first);
 
-    // Reply-only drafts survive persistence decode.
     const decoded = decodePersistedComposerState(
       JSON.parse(JSON.stringify({ schemaVersion: 1, drafts: { [draftKey]: saved } })),
     ).drafts[draftKey];
     expect(decoded?.replyTo).toEqual(first);
 
-    // Replying to a second response replaces the pending reply.
     setComposerDraftReplyTo(draftKey, second);
     expect(getComposerDraftSnapshot(draftKey).replyTo).toEqual(second);
 
-    // Clearing draft content removes replyTo.
     const cleared = clearComposerDraftContentState(
       { [draftKey]: getComposerDraftSnapshot(draftKey) },
       draftKey,
     );
     expect(cleared[draftKey]).toBeUndefined();
 
-    // Merging restores a reply into an empty draft, preserves a conflicting incoming reply inline, and undoes cleanly.
+    setComposerDraftReplyTo(draftKey, null);
+    expect(getComposerDraftSnapshot(draftKey).replyTo).toBeUndefined();
+  });
+
+  it("preserves a conflicting incoming reply inline on merge and rolls it back on undo", () => {
+    const draftKey = "reply-environment:reply-merge-thread";
+    const first = makeReply(draftKey, "assistant-1", "First answer");
+    const second = makeReply(draftKey, "assistant-2", "Second answer");
+
     const snapshot: ComposerDraft = { text: "", attachments: [] };
     const merged = mergeComposerDraftContentState({ [draftKey]: snapshot }, draftKey, {
       text: "Follow up",
@@ -2983,6 +2991,7 @@ describe("mobile composer drafts", () => {
       replyTo: first,
     });
     expect(merged[draftKey]?.replyTo).toEqual(first);
+
     const conflictMerged = mergeComposerDraftContentState(merged, draftKey, {
       text: "More",
       attachments: [],
@@ -2993,6 +3002,7 @@ describe("mobile composer drafts", () => {
       `Follow up\n\n[Second answer](t3-context://v1/response/${second.contextId}) More`,
     );
     expect(conflictMerged[draftKey]?.context?.records).toEqual([second]);
+
     const conflictUndone = undoComposerDraftMergeState(
       {
         [draftKey]: {
@@ -3016,8 +3026,5 @@ describe("mobile composer drafts", () => {
     );
     expect(undone[draftKey]?.text).toBe(" extra");
     expect(undone[draftKey]?.replyTo).toBeUndefined();
-
-    setComposerDraftReplyTo(draftKey, null);
-    expect(getComposerDraftSnapshot(draftKey).replyTo).toBeUndefined();
   });
 });

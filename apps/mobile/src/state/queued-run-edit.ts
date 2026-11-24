@@ -9,10 +9,7 @@ import type {
 import { useAtomValue } from "@effect/atom-react";
 import * as Equal from "effect/Equal";
 import { msg } from "gt-react-native";
-import {
-  extractReplyFromMessage,
-  stripAttachmentOnlyBootstrapPrompt,
-} from "@t3tools/shared/composerContextReferences";
+import { stripAttachmentOnlyBootstrapPrompt } from "@t3tools/shared/composerContextReferences";
 import {
   makeQueuedRunEditStore,
   resolveQueuedEditExit,
@@ -20,7 +17,7 @@ import {
 } from "@t3tools/client-runtime/queued-run-edit";
 
 import { m } from "../i18n/messages";
-import { uploadedComposerContext } from "../lib/composerContext";
+import { extractReplyFromMessage, uploadedComposerContext } from "../lib/composerContext";
 import { appAtomRegistry } from "./atom-registry";
 import { abortComposerDraftOperations } from "./composerDraftOperations";
 import { queuedEditDraftKey } from "./queued-edit-draft-key";

@@ -6,7 +6,6 @@ import {
   type ElementContextDetails,
   type EnvironmentId,
   type KnownComposerContextRecord,
-  type OrchestrationMessageContext,
   type ResponseContextRecord,
   type ScopedThreadRef,
   type ThreadContextRecord,
@@ -139,28 +138,12 @@ export function responseContextRecord(
 // The reply leads the message, so its card sits above the text it is about. Text that
 // already points at that response, from a pasted card, keeps its one reference.
 export function withReplyReference(prompt: string, replyTo: ResponseContextRecord | null): string {
-  if (!replyTo) return prompt;
-  if (
-    collectComposerContextReferences(prompt).some(
+  return replyTo &&
+    !collectComposerContextReferences(prompt).some(
       (occurrence) => occurrence.contextId === replyTo.contextId,
     )
-  ) {
-    return prompt;
-  }
-  const reference = formatComposerContextReference(responseContextReference(replyTo));
-  return prompt.length > 0 ? `${reference} ${prompt}` : reference;
-}
-
-export function withReplyContext(
-  context: OrchestrationMessageContext | undefined,
-  replyTo: ResponseContextRecord | null,
-): OrchestrationMessageContext | undefined {
-  if (!replyTo) return context;
-  const existing = context?.records ?? [];
-  if (existing.some((record) => record.contextId === replyTo.contextId)) {
-    return context;
-  }
-  return { version: 1, records: [...existing, replyTo] };
+    ? `${formatComposerContextReference(responseContextReference(replyTo))} ${prompt}`
+    : prompt;
 }
 
 export function removeComposerContextReference(
@@ -185,38 +168,6 @@ export function removeComposerContextReference(
     cursor = result.length;
   }
   return { prompt: result, cursor };
-}
-
-/**
- * Splits a pending reply out of a serialized message's text and context so editors and failed
- * send restores can show it in the reply bar instead of as an inline chip.
- */
-export function extractReplyFromMessage(
-  text: string,
-  context: OrchestrationMessageContext | undefined,
-): {
-  readonly text: string;
-  readonly context: OrchestrationMessageContext | undefined;
-  readonly replyTo: ResponseContextRecord | undefined;
-} {
-  if (!context) return { text, context, replyTo: undefined };
-  const referenced = new Set(
-    collectComposerContextReferences(text).map((occurrence) => occurrence.contextId),
-  );
-  const replyTo = context.records.find(
-    (record): record is ResponseContextRecord =>
-      isResponseContextRecord(record) && referenced.has(record.contextId),
-  );
-  if (!replyTo) return { text, context, replyTo: undefined };
-  const strippedText = removeComposerContextReference(text, replyTo.contextId).prompt.trimStart();
-  const remainingRecords = context.records.filter(
-    (record) => record.contextId !== replyTo.contextId,
-  );
-  return {
-    text: strippedText,
-    context: remainingRecords.length > 0 ? { version: 1, records: remainingRecords } : undefined,
-    replyTo,
-  };
 }
 
 /** One record per thread, so re-attaching a renamed thread reuses its chip. */

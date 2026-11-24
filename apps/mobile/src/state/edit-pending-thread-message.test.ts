@@ -9,9 +9,9 @@ import {
 } from "@t3tools/contracts";
 import {
   responseContextRecord,
-  withReplyContext,
   withReplyReference,
 } from "@t3tools/shared/composerContextReferences";
+import { withReplyContext } from "../lib/composerContext";
 import type { QueuedThreadMessage } from "./thread-outbox-model";
 
 const state = vi.hoisted(() => ({

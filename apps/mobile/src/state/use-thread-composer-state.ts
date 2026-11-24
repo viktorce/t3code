@@ -49,7 +49,6 @@ import { deriveThreadTitleSeed } from "@t3tools/client-runtime/operations";
 import { upgradeLegacyContextMessage } from "@t3tools/shared/composerContextLegacy";
 import {
   restoreAttachmentOnlyBootstrapPrompt,
-  withReplyContext,
   withReplyReference,
 } from "@t3tools/shared/composerContextReferences";
 import {
@@ -57,6 +56,7 @@ import {
   reidentifyComposerContext,
   serializeComposerMessageForServer,
   uploadedComposerContext,
+  withReplyContext,
 } from "../lib/composerContext";
 import { uuidv4 } from "../lib/uuid";
 import { useNowMinuteMs } from "../lib/clock";
@@ -556,7 +556,7 @@ export function useThreadComposerState(input: {
       Dialog.alert(m(msg("Too much context")), contextBlockReason);
       return;
     }
-    const textForSave = withReplyReference(text, replyTo);
+    const textForSave = withReplyReference(text, replyTo).trim();
     const finishSave = startQueuedRunEditSave(threadKey);
     if (finishSave === null) return;
     savingQueuedEditRef.current = true;
@@ -752,7 +752,7 @@ export function useThreadComposerState(input: {
             {
               ...serializeComposerMessageForServer(
                 restoreAttachmentOnlyBootstrapPrompt(
-                  withReplyReference(sideChatCommand.prompt, replyTo),
+                  withReplyReference(sideChatCommand.prompt, replyTo).trim(),
                   prepared.attachments.length > 0,
                 ),
                 uploadedComposerContext(contextForSend, attachments, prepared.attachments),
@@ -906,7 +906,7 @@ export function useThreadComposerState(input: {
     // A redirect belongs to the approval it answers; the armed session waits for the next message.
     const freshContext = beforeDispatch === undefined && isFreshSessionPending(threadKey);
     const metadata = makeQueuedMessageMetadata();
-    const textForSend = withReplyReference(text, replyTo);
+    const textForSend = withReplyReference(text, replyTo).trim();
     // A fresh session drops the context a compaction would summarize. Only a send the notice
     // announced compacts, since the notice's minute clock can trail the exact deadline.
     const compactBeforeSend =

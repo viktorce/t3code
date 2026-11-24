@@ -21,6 +21,7 @@ import {
   type ComposerContextRecord,
   OrchestrationMessageContext,
   type PullRequestContextMetadata,
+  type ResponseContextRecord,
   type ReviewCommentContextRecord,
   type ServerProviderSkill,
   type EnvironmentContextRecord,
@@ -32,6 +33,8 @@ import {
   collectComposerContextReferences,
   formatComposerContextReference,
   isImageReferencesOnly,
+  isResponseContextRecord,
+  removeComposerContextReference,
   replaceComposerContextReferences,
   sanitizeComposerContextLabel,
 } from "@t3tools/shared/composerContextReferences";
@@ -330,4 +333,50 @@ export function serializeComposerMessageForServer(
     ? ATTACHMENT_ONLY_BOOTSTRAP_PROMPT
     : composerText;
   return { text, ...(context ? { context } : {}) };
+}
+
+export function withReplyContext(
+  context: OrchestrationMessageContext | undefined,
+  replyTo: ResponseContextRecord | null,
+): OrchestrationMessageContext | undefined {
+  if (!replyTo) return context;
+  const existing = context?.records ?? [];
+  if (existing.some((record) => record.contextId === replyTo.contextId)) {
+    return context;
+  }
+  return { version: 1, records: [...existing, replyTo] };
+}
+
+/**
+ * Splits a leading reply reference out of a serialized message so editors and failed-send
+ * restores show it in the reply bar while leaving any non-leading response chips inline.
+ */
+export function extractReplyFromMessage(
+  text: string,
+  context: OrchestrationMessageContext | undefined,
+): {
+  readonly text: string;
+  readonly context: OrchestrationMessageContext | undefined;
+  readonly replyTo: ResponseContextRecord | undefined;
+} {
+  if (!context) return { text, context, replyTo: undefined };
+  const leadingOffset = text.length - text.trimStart().length;
+  const leading = collectComposerContextReferences(text)[0];
+  if (!leading || leading.kind !== "response" || leading.start !== leadingOffset) {
+    return { text, context, replyTo: undefined };
+  }
+  const replyTo = context.records.find(
+    (record): record is ResponseContextRecord =>
+      isResponseContextRecord(record) && record.contextId === leading.contextId,
+  );
+  if (!replyTo) return { text, context, replyTo: undefined };
+  const strippedText = removeComposerContextReference(text, replyTo.contextId).prompt.trimStart();
+  const remainingRecords = context.records.filter(
+    (record) => record.contextId !== replyTo.contextId,
+  );
+  return {
+    text: strippedText,
+    context: remainingRecords.length > 0 ? { version: 1, records: remainingRecords } : undefined,
+    replyTo,
+  };
 }

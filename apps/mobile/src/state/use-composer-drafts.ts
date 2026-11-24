@@ -36,14 +36,17 @@ import type {
 import { draftModelPickMatchesThread } from "@t3tools/shared/model";
 
 import { writeFileAtomically } from "../lib/atomic-file";
-import { createComposerContextHistory, referencedComposerContext } from "../lib/composerContext";
+import {
+  createComposerContextHistory,
+  referencedComposerContext,
+  withReplyContext,
+} from "../lib/composerContext";
 import { isQueuedEditDraftKey } from "./queued-edit-draft-key";
 import {
   collectComposerContextReferences,
   formatComposerContextReference,
   sanitizeComposerContextLabel,
   replaceComposerContextReferences,
-  withReplyContext,
   withReplyReference,
 } from "@t3tools/shared/composerContextReferences";
 import { imageMimeType } from "@t3tools/shared/image";
@@ -1831,7 +1834,7 @@ function mergeIncomingReply(
     incoming.replyTo !== undefined &&
     existingReplyTo.contextId !== incoming.replyTo.contextId;
   return {
-    text: conflict ? withReplyReference(incoming.text, incoming.replyTo!) : incoming.text,
+    text: conflict ? withReplyReference(incoming.text, incoming.replyTo!).trim() : incoming.text,
     context: conflict ? withReplyContext(incoming.context, incoming.replyTo!) : incoming.context,
     replyTo: existingReplyTo ?? incoming.replyTo,
   };
