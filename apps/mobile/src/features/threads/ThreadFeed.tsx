@@ -1345,6 +1345,14 @@ const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
       ...selector,
     });
   };
+  const replyTarget =
+    props.onReplyToResponse && props.citationSource && props.reply
+      ? {
+          onReplyToResponse: props.onReplyToResponse,
+          citationSource: props.citationSource,
+          reply: props.reply,
+        }
+      : null;
   const models = useModelMentions(props.environmentId, props.markdown);
   const threadIcons = useThreadChipIcons(props.environmentId, liveMarkdown);
   const withGallery = useFilePreviewGallery();
@@ -1390,23 +1398,23 @@ const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
             : undefined
         }
         onReply={
-          props.onReplyToResponse && props.citationSource && props.reply
+          replyTarget
             ? () => {
                 const opening = captureMobileAssistantMessageOpening(liveMarkdown);
-                if (!opening || !props.citationSource || !props.reply) return;
-                props.onReplyToResponse?.(
+                if (!opening) return;
+                replyTarget.onReplyToResponse(
                   responseContextRecord({
                     citation: {
                       version: 1,
                       environmentId: props.environmentId,
-                      threadId: props.citationSource.threadId,
-                      messageId: props.citationSource.messageId,
+                      threadId: replyTarget.citationSource.threadId,
+                      messageId: replyTarget.citationSource.messageId,
                       ...opening,
                     },
-                    itemId: props.reply.sourceItemId,
+                    itemId: replyTarget.reply.sourceItemId,
                     subagents: readResponseSubagents(
-                      scopeThreadRef(props.environmentId, props.citationSource.threadId),
-                      props.reply.sourceItemId,
+                      scopeThreadRef(props.environmentId, replyTarget.citationSource.threadId),
+                      replyTarget.reply.sourceItemId,
                     ),
                   }),
                 );
@@ -2719,9 +2727,7 @@ function renderFeedEntry(
               citationSource={{ threadId: props.threadId, messageId: message.id }}
               onCiteAssistantText={props.onCiteAssistantText}
               onReplyToResponse={
-                props.onReplyToResponse && !message.streaming && message.projectedItem
-                  ? props.onReplyToResponse
-                  : undefined
+                props.onReplyToResponse && !message.streaming ? props.onReplyToResponse : undefined
               }
               markdownStyles={styles}
               linkHandlers={props.markdownLinkHandlers}

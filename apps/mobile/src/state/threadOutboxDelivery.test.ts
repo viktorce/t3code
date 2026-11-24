@@ -14,11 +14,8 @@ import {
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
-import {
-  responseContextRecord,
-  withReplyReference,
-} from "@t3tools/shared/composerContextReferences";
-import { withReplyContext } from "../lib/composerContext";
+import { responseContextRecord } from "@t3tools/shared/composerContextReferences";
+import { withReplyMessage } from "../lib/composerContext";
 import { describe, expect, it } from "@effect/vitest";
 import { afterEach, beforeEach, vi } from "vite-plus/test";
 
@@ -1002,12 +999,13 @@ describe("thread outbox recovery rollback", () => {
         itemId: TurnItemId.make("item-1"),
         subagents: [],
       });
+      const sent = withReplyMessage("Follow up", undefined, reply);
       const message = {
         ...queuedMessage({
           messageId: "message-reply-restore",
-          text: withReplyReference("Follow up", reply),
+          text: sent.text,
         }),
-        context: withReplyContext(undefined, reply),
+        context: sent.context,
       };
       const threadKey = `${message.environmentId}:${message.threadId}`;
       yield* Effect.promise(() => harness.manager.enqueue(message));

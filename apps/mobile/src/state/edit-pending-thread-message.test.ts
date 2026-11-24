@@ -7,11 +7,8 @@ import {
   TurnItemId,
   type ResponseContextRecord,
 } from "@t3tools/contracts";
-import {
-  responseContextRecord,
-  withReplyReference,
-} from "@t3tools/shared/composerContextReferences";
-import { withReplyContext } from "../lib/composerContext";
+import { responseContextRecord } from "@t3tools/shared/composerContextReferences";
+import { withReplyMessage } from "../lib/composerContext";
 import type { QueuedThreadMessage } from "./thread-outbox-model";
 
 const state = vi.hoisted(() => ({
@@ -148,8 +145,7 @@ describe("editing a pending message", () => {
     });
     const queuedReply: QueuedThreadMessage = {
       ...message,
-      text: withReplyReference("Queued follow up", reply),
-      context: withReplyContext(undefined, reply),
+      ...withReplyMessage("Queued follow up", undefined, reply),
     };
     expect(await editPendingThreadMessage(queuedReply)).toBe(true);
     expect(state.draft.text).toBe("Existing draft\n\nQueued follow up");

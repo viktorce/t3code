@@ -39,7 +39,7 @@ import { writeFileAtomically } from "../lib/atomic-file";
 import {
   createComposerContextHistory,
   referencedComposerContext,
-  withReplyContext,
+  withReplyMessage,
 } from "../lib/composerContext";
 import { isQueuedEditDraftKey } from "./queued-edit-draft-key";
 import {
@@ -47,7 +47,6 @@ import {
   formatComposerContextReference,
   sanitizeComposerContextLabel,
   replaceComposerContextReferences,
-  withReplyReference,
 } from "@t3tools/shared/composerContextReferences";
 import { imageMimeType } from "@t3tools/shared/image";
 import { videoMimeType } from "@t3tools/shared/video";
@@ -1833,9 +1832,11 @@ function mergeIncomingReply(
     existingReplyTo !== undefined &&
     incoming.replyTo !== undefined &&
     existingReplyTo.contextId !== incoming.replyTo.contextId;
+  const merged = conflict
+    ? withReplyMessage(incoming.text, incoming.context, incoming.replyTo)
+    : { text: incoming.text, context: incoming.context };
   return {
-    text: conflict ? withReplyReference(incoming.text, incoming.replyTo!).trim() : incoming.text,
-    context: conflict ? withReplyContext(incoming.context, incoming.replyTo!) : incoming.context,
+    ...merged,
     replyTo: existingReplyTo ?? incoming.replyTo,
   };
 }

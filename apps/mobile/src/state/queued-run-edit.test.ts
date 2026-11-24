@@ -4,9 +4,8 @@ import {
   ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
   responseContextRecord,
   restoreAttachmentOnlyBootstrapPrompt,
-  withReplyReference,
 } from "@t3tools/shared/composerContextReferences";
-import { withReplyContext } from "../lib/composerContext";
+import { withReplyMessage } from "../lib/composerContext";
 import {
   ChatAttachmentId,
   ComposerContextId,
@@ -282,12 +281,13 @@ describe("beginQueuedRunEdit", () => {
     const runs = Atom.make<ReadonlyArray<{ readonly id: RunId; readonly status: string }> | null>([
       { id: runId, status: "queued" },
     ]);
+    const sent = withReplyMessage("Follow up", undefined, reply);
     beginQueuedRunEdit(
       threadKey,
       {
         ...edit([]),
-        originalText: withReplyReference("Follow up", reply),
-        context: withReplyContext(undefined, reply),
+        originalText: sent.text,
+        context: sent.context,
       },
       runs,
     );

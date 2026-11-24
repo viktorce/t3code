@@ -382,10 +382,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     sideChat: !props.redirectsApproval,
     usageLimits: usageLimitsOffered,
     codexFeedback: selectedProviderStatus?.driver === "codex",
-    freshSession:
-      props.onFreshSession !== undefined &&
-      draftContext === undefined &&
-      draftReplyTo === undefined,
+    freshSession: props.onFreshSession !== undefined && draftContext === undefined,
   });
   const sendPresentation = resolveComposerSendPresentation(
     {

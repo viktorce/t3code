@@ -37,6 +37,7 @@ import {
   removeComposerContextReference,
   replaceComposerContextReferences,
   sanitizeComposerContextLabel,
+  withReplyReference,
 } from "@t3tools/shared/composerContextReferences";
 import {
   collectComposerInlineTokens,
@@ -335,16 +336,30 @@ export function serializeComposerMessageForServer(
   return { text, ...(context ? { context } : {}) };
 }
 
-export function withReplyContext(
+function withReplyContext(
   context: OrchestrationMessageContext | undefined,
-  replyTo: ResponseContextRecord | null,
-): OrchestrationMessageContext | undefined {
-  if (!replyTo) return context;
+  replyTo: ResponseContextRecord,
+): OrchestrationMessageContext {
   const existing = context?.records ?? [];
   if (existing.some((record) => record.contextId === replyTo.contextId)) {
-    return context;
+    return context!;
   }
   return { version: 1, records: [...existing, replyTo] };
+}
+
+export function withReplyMessage(
+  text: string,
+  context: OrchestrationMessageContext | undefined,
+  replyTo: ResponseContextRecord | null | undefined,
+): {
+  readonly text: string;
+  readonly context: OrchestrationMessageContext | undefined;
+} {
+  if (!replyTo) return { text, context };
+  return {
+    text: withReplyReference(text, replyTo).trim(),
+    context: withReplyContext(context, replyTo),
+  };
 }
 
 /**

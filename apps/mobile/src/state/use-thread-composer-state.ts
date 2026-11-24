@@ -47,16 +47,13 @@ import {
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
 import { deriveThreadTitleSeed } from "@t3tools/client-runtime/operations";
 import { upgradeLegacyContextMessage } from "@t3tools/shared/composerContextLegacy";
-import {
-  restoreAttachmentOnlyBootstrapPrompt,
-  withReplyReference,
-} from "@t3tools/shared/composerContextReferences";
+import { restoreAttachmentOnlyBootstrapPrompt } from "@t3tools/shared/composerContextReferences";
 import {
   composerContextSendBlockReason,
   reidentifyComposerContext,
   serializeComposerMessageForServer,
   uploadedComposerContext,
-  withReplyContext,
+  withReplyMessage,
 } from "../lib/composerContext";
 import { uuidv4 } from "../lib/uuid";
 import { useNowMinuteMs } from "../lib/clock";
@@ -549,14 +546,7 @@ export function useThreadComposerState(input: {
       );
       return;
     }
-    const replyTo = draft.replyTo ?? null;
-    const contextForSave = withReplyContext(draft.context, replyTo);
-    const contextBlockReason = composerContextSendBlockReason(contextForSave);
-    if (contextBlockReason) {
-      Dialog.alert(m(msg("Too much context")), contextBlockReason);
-      return;
-    }
-    const textForSave = withReplyReference(text, replyTo).trim();
+    const editForSave = withReplyMessage(text, draft.context, draft.replyTo);
     const finishSave = startQueuedRunEditSave(threadKey);
     if (finishSave === null) return;
     savingQueuedEditRef.current = true;
@@ -592,7 +582,7 @@ export function useThreadComposerState(input: {
     }
     const payload = resolveQueuedEditPayload({
       edit,
-      draftContext: contextForSave,
+      draftContext: editForSave.context,
       draftAttachments: draft.attachments,
       uploaded: prepared.value.attachments,
     });
@@ -601,7 +591,10 @@ export function useThreadComposerState(input: {
       input: {
         threadId: thread.id,
         runId: edit.runId,
-        text: restoreAttachmentOnlyBootstrapPrompt(textForSave, payload.attachments.length > 0),
+        text: restoreAttachmentOnlyBootstrapPrompt(
+          editForSave.text,
+          payload.attachments.length > 0,
+        ),
         edit: {
           messageId: edit.messageId,
           attachments: payload.attachments,
@@ -705,8 +698,8 @@ export function useThreadComposerState(input: {
     }
 
     const replyTo = draft.replyTo ?? null;
-    const contextForSend = withReplyContext(draft.context, replyTo);
-    const contextBlockReason = composerContextSendBlockReason(contextForSend);
+    const messageForSend = withReplyMessage(text, draft.context, replyTo);
+    const contextBlockReason = composerContextSendBlockReason(messageForSend.context);
     if (contextBlockReason) {
       Dialog.alert(m(msg("Too much context")), contextBlockReason);
       return null;
@@ -715,12 +708,13 @@ export function useThreadComposerState(input: {
     // A redirect's text answers its approval, so `/side` there is that text, not the command.
     const sideChatCommand = beforeDispatch === undefined ? parseSideChatCommand(text) : null;
     if (sideChatCommand) {
+      const sideChatMessage = withReplyMessage(sideChatCommand.prompt, draft.context, replyTo);
       if (sideChatUnavailableReason !== null) {
         Dialog.alert(m(msg("Side chat not started")), sideChatUnavailableReason);
       } else if (
         sideChatCommand.prompt.length === 0 &&
         attachments.length === 0 &&
-        (contextForSend?.records.length ?? 0) === 0
+        (sideChatMessage.context?.records.length ?? 0) === 0
       ) {
         Dialog.alert(
           m(msg("Ask a side question")),
@@ -752,13 +746,13 @@ export function useThreadComposerState(input: {
             {
               ...serializeComposerMessageForServer(
                 restoreAttachmentOnlyBootstrapPrompt(
-                  withReplyReference(sideChatCommand.prompt, replyTo).trim(),
+                  sideChatMessage.text,
                   prepared.attachments.length > 0,
                 ),
-                uploadedComposerContext(contextForSend, attachments, prepared.attachments),
+                uploadedComposerContext(sideChatMessage.context, attachments, prepared.attachments),
               ),
               attachments: prepared.attachments,
-              titleSeed: deriveThreadTitleSeed({ text: sideChatCommand.prompt, attachments }, m),
+              titleSeed: deriveThreadTitleSeed({ text: sideChatMessage.text, attachments }, m),
             },
             {
               runtimeMode: draft.runtimeMode ?? thread.runtimeMode,
@@ -906,7 +900,6 @@ export function useThreadComposerState(input: {
     // A redirect belongs to the approval it answers; the armed session waits for the next message.
     const freshContext = beforeDispatch === undefined && isFreshSessionPending(threadKey);
     const metadata = makeQueuedMessageMetadata();
-    const textForSend = withReplyReference(text, replyTo).trim();
     // A fresh session drops the context a compaction would summarize. Only a send the notice
     // announced compacts, since the notice's minute clock can trail the exact deadline.
     const compactBeforeSend =
@@ -914,7 +907,7 @@ export function useThreadComposerState(input: {
       !freshContext &&
       followUpDispatchMode === null &&
       appAtomRegistry.get(fullHistoryThreadKeysAtom)[threadKey] !== true &&
-      resumeCompactionTokens(modelSelection, textForSend, metadata.createdAt) !== null;
+      resumeCompactionTokens(modelSelection, messageForSend.text, metadata.createdAt) !== null;
     const messageId = MessageId.make(metadata.messageId);
     onWillEnqueue?.();
     clearThreadComposerError(threadKey);
@@ -923,9 +916,9 @@ export function useThreadComposerState(input: {
       threadId: selectedThreadShell.id,
       messageId,
       commandId: CommandId.make(metadata.commandId),
-      text: textForSend,
+      text: messageForSend.text,
       attachments,
-      context: contextForSend,
+      context: messageForSend.context,
       modelSelection,
       runtimeMode: draft.runtimeMode ?? thread.runtimeMode,
       interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
