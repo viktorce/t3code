@@ -103,8 +103,15 @@ function ResponseContextSection(props: {
       />
       <View className="flex-row gap-3 rounded-2xl bg-grouped-card p-4">
         <View className="w-1 rounded-full bg-primary" />
-        <Text selectable textRole="body" className="min-w-0 flex-1 text-foreground">
-          {citation.text}
+        {/* One paragraph, as on web's reply card, short enough that the button stays in view
+            at the sheet's first height. */}
+        <Text
+          selectable
+          textRole="body"
+          numberOfLines={4}
+          className="min-w-0 flex-1 text-foreground"
+        >
+          {citation.text.replace(/\s+/g, " ")}
         </Text>
       </View>
       <Button
