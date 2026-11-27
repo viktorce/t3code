@@ -10,8 +10,10 @@ import type {
   ElementContextSource,
   EnvironmentId,
   ProjectId,
+  ResponseContextRecord,
   ScopedThreadRef,
 } from "@t3tools/contracts";
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { changeRequestTermKind } from "../lib/changeRequestTerm";
@@ -33,6 +35,8 @@ import { AppText as Text } from "./ui/AppText";
 import { Sheet } from "./ui/Sheet";
 import { useAppearancePreferences } from "../features/settings/appearance/AppearancePreferencesProvider";
 import { getMobileTerminalTheme } from "../features/terminal/terminalTheme";
+import { requestThreadMessageJump } from "../features/threads/threadMessageJump";
+import { useOpenLinkedThread } from "../features/threads/useOpenLinkedThread";
 
 function ContextField(props: {
   label: string;
@@ -81,6 +85,39 @@ function ContextSource(props: { source: ElementContextSource | null }) {
       value={[source.functionName, location].filter(Boolean).join("\n")}
       code
     />
+  );
+}
+
+function ResponseContextSection(props: {
+  readonly record: ResponseContextRecord;
+  readonly onClose: () => void;
+}) {
+  const gt = useGT();
+  const openLinkedThread = useOpenLinkedThread();
+  const { citation, subagents } = props.record;
+  return (
+    <View className="gap-3">
+      <ContextField
+        label={gt("Agents")}
+        value={subagents?.map((subagent) => subagent.title).join(", ")}
+      />
+      <View className="flex-row gap-3 rounded-2xl bg-grouped-card p-4">
+        <View className="w-1 rounded-full bg-primary" />
+        <Text selectable textRole="body" className="min-w-0 flex-1 text-foreground">
+          {citation.text}
+        </Text>
+      </View>
+      <Button
+        label={gt("Go to message")}
+        tone="secondary"
+        onPress={() => {
+          props.onClose();
+          requestThreadMessageJump(scopedThreadKey(citation), citation.messageId);
+          openLinkedThread(citation);
+        }}
+        fullWidth
+      />
+    </View>
   );
 }
 
@@ -388,6 +425,9 @@ export function ComposerContextSheet(props: {
                   />
                 ) : null}
               </View>
+            ) : null}
+            {record.kind === "response" ? (
+              <ResponseContextSection record={record} onClose={props.onClose} />
             ) : null}
             {record.kind === "environment" ? (
               <ContextField label={gt("Machine", { $context: "computer" })} value={record.label} />
