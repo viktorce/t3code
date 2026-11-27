@@ -1886,6 +1886,7 @@ function ThreadDetailBody(
                     props.composerDraftKey !== null ? (
                       <ComposerReplyBanner
                         draftKey={props.composerDraftKey}
+                        threadKey={selectedThreadKey}
                         disabled={props.isSavingQueuedEdit}
                       />
                     ) : null}

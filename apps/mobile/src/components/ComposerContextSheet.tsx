@@ -98,7 +98,7 @@ function ResponseContextSection(props: {
   return (
     <View className="gap-3">
       <ContextField
-        label={gt("Agents")}
+        label={gt("Agents", { $context: "the subagents a response reported on" })}
         value={subagents?.map((subagent) => subagent.title).join(", ")}
       />
       <View className="flex-row gap-3 rounded-2xl bg-grouped-card p-4">

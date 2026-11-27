@@ -6,12 +6,16 @@ import { Notice } from "../../components/ui/Notice";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import { setComposerDraftReplyTo, useComposerDraftReplyTo } from "../../state/use-composer-drafts";
 import { requestThreadMessageJump } from "./threadMessageJump";
+import { useOpenLinkedThread } from "./useOpenLinkedThread";
 
 export function ComposerReplyBanner(props: {
   readonly draftKey: string;
+  /** The thread on screen; a reply to another thread's response opens that thread. */
+  readonly threadKey: string;
   readonly disabled?: boolean;
 }) {
   const gt = useGT();
+  const openLinkedThread = useOpenLinkedThread();
   const replyTo = useComposerDraftReplyTo(props.draftKey);
   if (replyTo === null) return null;
 
@@ -47,10 +51,12 @@ export function ComposerReplyBanner(props: {
           title,
           accessibilityLabel,
           onPress: () => {
-            requestThreadMessageJump(
-              scopedThreadKey(replyTo.citation.environmentId, replyTo.citation.threadId),
-              replyTo.citation.messageId,
+            const responseThreadKey = scopedThreadKey(
+              replyTo.citation.environmentId,
+              replyTo.citation.threadId,
             );
+            requestThreadMessageJump(responseThreadKey, replyTo.citation.messageId);
+            if (responseThreadKey !== props.threadKey) openLinkedThread(replyTo.citation);
           },
         }}
         onDismiss={props.disabled ? undefined : () => setComposerDraftReplyTo(props.draftKey, null)}
