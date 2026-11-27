@@ -43,6 +43,7 @@ function ContextField(props: {
   value: string | null | undefined;
   code?: boolean;
   language?: "html" | "css";
+  numberOfLines?: number;
 }) {
   if (!props.value) return null;
   return (
@@ -62,6 +63,7 @@ function ContextField(props: {
       ) : (
         <Text
           selectable
+          numberOfLines={props.numberOfLines}
           className={props.code ? "text-sm text-foreground" : "text-base text-foreground"}
           style={props.code ? { fontFamily: REVIEW_MONO_FONT_FAMILY } : undefined}
         >
@@ -100,6 +102,7 @@ function ResponseContextSection(props: {
       <ContextField
         label={gt("Agents", { $context: "the subagents a response reported on" })}
         value={subagents?.map((subagent) => subagent.title).join(", ")}
+        numberOfLines={2}
       />
       <View className="flex-row gap-3 rounded-2xl bg-grouped-card p-4">
         <View className="w-1 rounded-full bg-primary" />
