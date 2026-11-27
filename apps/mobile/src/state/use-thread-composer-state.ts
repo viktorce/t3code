@@ -101,6 +101,7 @@ import {
   mergeComposerDraftContent,
   removeComposerDraftAttachment,
   scheduleUnusedComposerAttachmentCleanup,
+  setComposerDraftReplyTo,
   setComposerDraftText,
   setFreshSessionPending,
   useComposerDraft,
@@ -810,7 +811,7 @@ export function useThreadComposerState(input: {
       (entry) => entry.instanceId === modelSelection.instanceId,
     );
     const feedbackCommand =
-      attachments.length === 0 && replyTo === null && provider?.driver === "codex"
+      attachments.length === 0 && provider?.driver === "codex"
         ? parseCodexFeedbackCommand(text)
         : null;
     if (feedbackCommand) {
@@ -831,7 +832,11 @@ export function useThreadComposerState(input: {
             command: text,
             createdAt: metadata.createdAt,
           },
-          clearDraft: () => clearComposerDraftContent(threadKey),
+          clearDraft: () => {
+            clearComposerDraftContent(threadKey);
+            // The reply waits in the bar for the next message.
+            if (replyTo) setComposerDraftReplyTo(threadKey, replyTo);
+          },
           onUpdate: (submission) => {
             setFeedbackSubmissionsByThreadKey((current) => {
               const existing = current[threadKey] ?? [];

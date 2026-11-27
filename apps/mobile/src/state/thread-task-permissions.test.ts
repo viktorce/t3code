@@ -55,6 +55,7 @@ const state = vi.hoisted(() => ({
   compactDueAt: "",
   setFreshPending: vi.fn(),
   clearDraft: vi.fn(),
+  setReplyTo: vi.fn(),
   appendAttachments: vi.fn(),
   mergeDraft: vi.fn(),
   fileHolds: [] as string[],
@@ -217,6 +218,7 @@ vi.mock("./use-composer-drafts", async () => {
     setFreshSessionPending: state.setFreshPending,
     clearComposerDraftContent: state.clearDraft,
     clearComposerDraft: state.clearDraft,
+    setComposerDraftReplyTo: state.setReplyTo,
     setComposerDraftText: (_key: string, text: string) => {
       state.draft.text = text;
     },
@@ -479,6 +481,24 @@ describe("mobile task permissions", () => {
       expect.objectContaining({ text: `${reference} /clear` }),
     );
     expect(state.setFreshPending).not.toHaveBeenCalled();
+  });
+
+  it("runs /feedback with a pending reply and keeps the reply for the next message", async () => {
+    state.grantedEnvironments.add("secondary");
+    const { replyTo } = pendingReply();
+    state.draft = { ...state.draft, text: "/feedback demo", replyTo };
+    expect(await useThreadComposerState(NO_SIDE_CHATS).onSendMessage()).toBeNull();
+    expect(state.feedback).toHaveBeenCalledExactlyOnceWith({
+      environmentId: "secondary",
+      input: { threadId: "thread", reason: "demo" },
+    });
+    expect(state.enqueue).not.toHaveBeenCalled();
+    expect(state.clearDraft).toHaveBeenCalledExactlyOnceWith("secondary:thread");
+    expect(state.setReplyTo).toHaveBeenCalledExactlyOnceWith("secondary:thread", replyTo);
+    // Put back after the clear, which drops the reply with the text.
+    expect(state.setReplyTo.mock.invocationCallOrder[0]).toBeGreaterThan(
+      state.clearDraft.mock.invocationCallOrder[0]!,
+    );
   });
 
   it("hands a pending reply to an approval as added context and keeps it when refused", async () => {
