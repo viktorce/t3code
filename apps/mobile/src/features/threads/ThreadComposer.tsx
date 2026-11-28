@@ -102,7 +102,6 @@ import {
   composerRunsDraftLocally,
   type ActiveTurnComposerAction,
 } from "@t3tools/client-runtime/state/composer-dispatch";
-import { parseCodexFeedbackCommand } from "@t3tools/client-runtime/state/threads";
 import type { FollowUpBehavior } from "../../lib/followUpBehavior";
 import {
   resolveComposerSendPresentation,
@@ -387,23 +386,16 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
       props.serverConfig?.providers ?? [],
       props.serverConfig?.usageLimitSources ?? [],
     );
-  const codexFeedbackOffered = selectedProviderStatus?.driver === "codex";
-  const commandRunsLocally = composerRunsDraftLocally({
+  const draftRunsLocally = composerRunsDraftLocally({
     text: draftMessage,
     holdsNoAttachedContext: draftAttachments.length === 0,
     replyPending: draftReplyTo !== undefined,
     // A redirect's text answers its approval, so `/side` there is that text.
     sideChat: !props.redirectsApproval,
     usageLimits: usageLimitsOffered,
-    codexFeedback: codexFeedbackOffered,
+    codexFeedback: selectedProviderStatus?.driver === "codex",
     freshSession: props.onFreshSession !== undefined && draftContext === undefined,
   });
-  // `/feedback` runs with a pending reply too, which then stays in the bar.
-  const feedbackRunsLocally =
-    codexFeedbackOffered &&
-    draftAttachments.length === 0 &&
-    parseCodexFeedbackCommand(draftMessage) !== null;
-  const draftRunsLocally = commandRunsLocally || feedbackRunsLocally;
   const sendPresentation = resolveComposerSendPresentation(
     {
       editingQueuedMessage: queuedEdit !== null,
