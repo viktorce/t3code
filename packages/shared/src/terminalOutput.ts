@@ -339,9 +339,9 @@ function escapeLength(input: string, index: number): number {
     return -1;
   }
   if (STRING_SEQUENCE_INTRODUCERS.has(next)) {
-    // BEL/ST ends string sequences; also stop at newlines so stray binary introducers cannot hide later output.
+    // ST (and BEL for OSC) ends string sequences; also stop at newlines so stray binary introducers cannot hide later output.
     for (let cursor = index + 2; cursor < input.length; cursor += 1) {
-      if (input[cursor] === "\u0007") return cursor - index + 1;
+      if (next === "]" && input[cursor] === "\u0007") return cursor - index + 1;
       if (input[cursor] === "\u0018" || input[cursor] === "\u001a") return cursor - index + 1;
       if (input[cursor] === "\n") return cursor - index;
       // Like xterm.js, an ESC that does not start ST ends the string and begins the next sequence.
@@ -689,13 +689,26 @@ export function terminalOutputTail(
   if (newline !== -1 && newline - start < maxChars / 4) {
     return { text: text.slice(newline + 1), truncated: true };
   }
-  // Cutting inside a line: never split an escape, and keep the colour in force.
+  // Cutting inside a line: never split an escape, keep the colour in force, and skip
+  // zero-width marks and lone low surrogates left without their base character.
   const style = styleAt(text, start);
+  let prefix = style.prefix;
   start = style.start;
-  // Never start on a lone low surrogate.
-  const first = text.charCodeAt(start);
-  if (first >= 0xdc00 && first <= 0xdfff) start += 1;
-  return { text: style.prefix + text.slice(start), truncated: true };
+  while (start < text.length) {
+    if (text.startsWith(`${ESC}[`, start)) {
+      const end = text.indexOf("m", start + 2);
+      if (end === -1) break;
+      const seq = text.slice(start, end + 1);
+      prefix = seq === sgr("") ? "" : seq;
+      start = end + 1;
+      continue;
+    }
+    const code = text.charCodeAt(start);
+    const character = String.fromCodePoint(text.codePointAt(start)!);
+    if (!(code >= 0xdc00 && code <= 0xdfff) && characterWidth(character) !== 0) break;
+    start += character.length;
+  }
+  return { text: start < text.length ? prefix + text.slice(start) : "", truncated: true };
 }
 
 /**
@@ -1021,10 +1034,11 @@ export function terminalOutputSpans(
   return spans;
 }
 
-const SGR_PATTERN = new RegExp(`${ESC}\\[[0-9;:]*m`, "gu");
+// Colours and the cursor, erase and mode controls a saved transcript cannot replay.
+const CSI_PATTERN = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, "gu");
 
 export function terminalOutputPlainText(text: string): string {
-  return text.replace(SGR_PATTERN, "");
+  return text.replace(CSI_PATTERN, "");
 }
 
 // tqdm redraws a progress bar after a carriage return; JupyterLab shows only what the last

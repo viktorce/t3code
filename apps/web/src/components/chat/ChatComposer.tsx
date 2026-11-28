@@ -491,6 +491,8 @@ export interface ChatComposerProps {
   removedEditingQueuedAttachments?: ReadonlyArray<QueuedAttachmentContextBinding> | undefined;
   onRemoveEditingQueuedAttachment: (attachmentId: string) => void;
   onRestoreEditingQueuedAttachment?: ((attachment: ContractChatAttachment) => void) | undefined;
+  canMoveEditingQueuedMessageToStash?: boolean | undefined;
+  onMoveEditingQueuedMessageToStash?: (() => void) | undefined;
 
   onCompactContext: () => void;
   onSend: (
@@ -634,6 +636,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     removedEditingQueuedAttachments,
     onRemoveEditingQueuedAttachment,
     onRestoreEditingQueuedAttachment,
+    canMoveEditingQueuedMessageToStash,
+    onMoveEditingQueuedMessageToStash,
   } = props;
   const {
     activePendingProgress: incomingPendingProgress,
@@ -2698,6 +2702,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     setComposerTrigger,
     importContextRecords,
     expandMobileComposer: expandMobileComposerStable,
+    editingQueuedMessage:
+      activeEditingQueuedAttachments !== null && onMoveEditingQueuedMessageToStash
+        ? {
+            canMoveToStash: canMoveEditingQueuedMessageToStash === true,
+            onMovedToStash: onMoveEditingQueuedMessageToStash,
+          }
+        : null,
   });
   const hasBlockingComposerTopDrawer = pendingUserInputs.length > 0;
   const composerControlsCollapsed = isComposerCollapsedMobile;
@@ -2794,8 +2805,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // An open question owns the space above the composer. Only a machine problem,
   // which is why an answer could not go through, stays beside it.
   const replyTo = composerDraft?.replyTo ?? null;
+  // A send waits for compressing images, so they count as attached.
   const holdsNoAttachedContext =
-    composerImages.length + composerFiles.length === 0 &&
+    composerImages.length + composerFiles.length + allPreparingComposerImages.length === 0 &&
     composerSendState.sendableTerminalContexts.length === 0 &&
     composerPreviewAnnotations.length === 0 &&
     composerReviewComments.length === 0 &&
@@ -2803,6 +2815,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     composerEnvironmentContexts.length === 0;
   const draftRunsLocally = composerRunsDraftLocally({
     text: prompt,
+    commandText: composerSendState.trimmedPrompt,
     holdsNoAttachedContext,
     replyPending: replyTo !== null,
     sideChat: props.sideChatAvailable === true || (props.sideChatDisabledReason ?? null) !== null,
