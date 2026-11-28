@@ -195,6 +195,15 @@ describe("appendTerminalOutput", () => {
     expect(feed([`a\u001b]0;${"t".repeat(80)}`, "\u001b", "\\b"]).text).toBe("ab");
   });
 
+  it("keeps a DCS payload hidden past a BEL until ST, wherever the chunk splits", () => {
+    const dcs = "\u001bPqA\u0007BBB\u001b\\OK";
+    for (let cut = 0; cut <= dcs.length; cut += 1) {
+      const state = feed([dcs.slice(0, cut)]);
+      expect(appendTerminalOutput(state, dcs.slice(cut)).text).toBe("OK");
+      expect(feed([terminalOutputResumeText(state), dcs.slice(cut)]).text).toBe("OK");
+    }
+  });
+
   it("drops an escape sequence that never terminates and resumes after it", () => {
     expect(feed(["ok\u001b]", "x".repeat(200), "\nafter"]).text).toBe("ok\nafter");
     expect(feed(["ok\u001b]0;title\u001b", "\u001b[31mred"]).text).toBe(
@@ -471,6 +480,19 @@ describe("terminalOutputTail", () => {
     const text = `${"a".repeat(10)}😀${"b".repeat(4)}`;
     const tail = terminalOutputTail(text, 5);
     expect(tail.text).toBe("bbbb");
+  });
+
+  it("never begins a styled tail on a detached combining mark", () => {
+    const red = { color: TERMINAL_PALETTES.dark[1] };
+    const output = normalizeTerminalOutput(`\u001b[31m${"e\u0301".repeat(8)}A`, 16);
+    expect(terminalOutputSpans(output.text, TERMINAL_PALETTES.dark)).toEqual([
+      { text: `${"e\u0301".repeat(5)}A`, style: red },
+    ]);
+
+    const crossStyle = terminalOutputTail("\u001b[0;32me\u001b[0;31m\u0301A\u001b[0m", 13);
+    expect(terminalOutputSpans(crossStyle.text, TERMINAL_PALETTES.dark)).toEqual([
+      { text: "A", style: red },
+    ]);
   });
 
   it("keeps the first complete line when the cut falls immediately after a newline", () => {
