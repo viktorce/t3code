@@ -280,7 +280,6 @@ import {
   resolveComposerDispatchMode,
   type ComposerDispatchMode,
 } from "@t3tools/client-runtime/state/composer-dispatch";
-import { parseCodexFeedbackCommand } from "@t3tools/client-runtime/state/threads";
 import {
   resolveProviderSkillsForCwd,
   resolveProviderSlashCommandsForCwd,
@@ -2802,19 +2801,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     composerReviewComments.length === 0 &&
     composerThreadContexts.length === 0 &&
     composerEnvironmentContexts.length === 0;
-  const codexFeedbackOffered = selectedProvider === "codex" && multipleModelSelections === null;
-  const commandRunsLocally = composerRunsDraftLocally({
+  const draftRunsLocally = composerRunsDraftLocally({
     text: prompt,
-    holdsOnlyText: holdsNoAttachedContext && replyTo === null,
+    holdsNoAttachedContext,
+    replyPending: replyTo !== null,
     sideChat: props.sideChatAvailable === true || (props.sideChatDisabledReason ?? null) !== null,
     usageLimits: props.onUsageLimitsCommand !== undefined,
-    codexFeedback: codexFeedbackOffered,
+    codexFeedback: selectedProvider === "codex" && multipleModelSelections === null,
     freshSession: props.onFreshSession !== undefined,
   });
-  // `/feedback` runs with a pending reply too, which then stays in the bar.
-  const feedbackRunsLocally =
-    codexFeedbackOffered && holdsNoAttachedContext && parseCodexFeedbackCommand(prompt) !== null;
-  const draftRunsLocally = commandRunsLocally || feedbackRunsLocally;
   const replyBannerItems: readonly ComposerBannerStackItem[] = replyTo
     ? [
         {

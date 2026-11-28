@@ -58,17 +58,20 @@ export function alternateComposerDispatchAction(
 /** The composer runs these drafts itself, so they never queue for or steer a running turn. */
 export function composerRunsDraftLocally(input: {
   readonly text: string;
-  readonly holdsOnlyText: boolean;
+  readonly holdsNoAttachedContext: boolean;
+  readonly replyPending: boolean;
   readonly sideChat: boolean;
   readonly usageLimits: boolean;
   readonly codexFeedback: boolean;
   readonly freshSession: boolean;
 }): boolean {
   if (input.sideChat && parseSideChatCommand(input.text) !== null) return true;
-  if (!input.holdsOnlyText) return false;
+  if (!input.holdsNoAttachedContext) return false;
+  // `/feedback` leaves a pending reply in place for the next message.
+  if (input.codexFeedback && parseCodexFeedbackCommand(input.text) !== null) return true;
+  if (input.replyPending) return false;
   return (
     (input.usageLimits && isUsageLimitsCommand(input.text)) ||
-    (input.codexFeedback && parseCodexFeedbackCommand(input.text) !== null) ||
     (input.freshSession && isClearComposerCommand(input.text))
   );
 }
