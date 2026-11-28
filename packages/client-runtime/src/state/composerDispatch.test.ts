@@ -75,9 +75,6 @@ it("treats only the commands the composer runs itself as local", () => {
   expect(
     composerRunsDraftLocally({ ...all, holdsNoAttachedContext: false, text: "/side why?" }),
   ).toBe(true);
-  expect(
-    composerRunsDraftLocally({ ...all, holdsNoAttachedContext: false, text: "/feedback slow" }),
-  ).toBe(false);
   const replying = { ...all, replyPending: true };
   expect(composerRunsDraftLocally({ ...replying, text: "/feedback slow" })).toBe(true);
   expect(
@@ -90,7 +87,15 @@ it("treats only the commands the composer runs itself as local", () => {
   expect(composerRunsDraftLocally({ ...replying, text: "/side why?" })).toBe(true);
   expect(composerRunsDraftLocally({ ...replying, text: "/clear" })).toBe(false);
   expect(composerRunsDraftLocally({ ...replying, text: "/usage-limits" })).toBe(false);
+  const reference = "[Reply](t3-context://v1/response/response_gone)";
   expect(
-    composerRunsDraftLocally({ ...replying, codexFeedback: false, text: "/feedback slow" }),
-  ).toBe(false);
+    composerRunsDraftLocally({
+      ...replying,
+      text: `${reference} /feedback slow`,
+      commandText: "/feedback slow",
+    }),
+  ).toBe(true);
+  expect(
+    composerRunsDraftLocally({ ...all, text: `${reference} /clear`, commandText: "/clear" }),
+  ).toBe(true);
 });
