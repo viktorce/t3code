@@ -168,6 +168,28 @@ it("drops the compact offer on a cold Claude thread while /clear is armed", asyn
   await expect.element(compactAndSend).toBeVisible();
 });
 
+it("sends /clear from the collapsed phone composer on a cold Claude thread", async () => {
+  const thread = coldClaudeThread("thread-claude-collapsed");
+  using _environment = installFakeEnvironment([thread], { providers: [CLAUDE_PROVIDER] });
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const router = getRouter(
+    createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${thread.id}`] }),
+  );
+  await router.load();
+  await using _app = await render(<AppRoot router={router} />, { router: false });
+  await expect.element(page.getByText(`Answer 2 for ${thread.id}.`)).toBeVisible();
+
+  const editor = page.getByTestId("composer-editor");
+  await userEvent.click(editor);
+  await userEvent.type(editor, "/clear");
+  (editor.element() as HTMLElement).blur();
+  await page.getByRole("button", { name: "Send message" }).click();
+  await expect.element(page.getByText("Your next message starts a fresh session")).toBeVisible();
+});
+
 it("/compact stays in the slash menu while a turn runs, since a typed command queues", async () => {
   const history = threadWithHistory("compact-mid-turn", 2, {
     instanceId: CLAUDE,

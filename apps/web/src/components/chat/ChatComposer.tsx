@@ -1385,11 +1385,36 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     projectSelectionRequired ||
     environmentUnavailable !== null ||
     (!hasMessageToSend && !showResumeAction);
+  const replyTo = composerDraft?.replyTo ?? null;
+  // A send waits for compressing images, so they count as attached.
+  const holdsNoAttachedContext =
+    composerImages.length + composerFiles.length + allPreparingComposerImages.length === 0 &&
+    composerSendState.sendableTerminalContexts.length === 0 &&
+    composerPreviewAnnotations.length === 0 &&
+    composerReviewComments.length === 0 &&
+    composerThreadContexts.length === 0 &&
+    composerEnvironmentContexts.length === 0;
+  const codexFeedbackOffered = selectedProvider === "codex" && multipleModelSelections === null;
+  const commandRunsLocally = composerRunsDraftLocally({
+    text: prompt,
+    commandText: composerSendState.trimmedPrompt,
+    holdsOnlyText: holdsNoAttachedContext && replyTo === null,
+    sideChat: props.sideChatAvailable === true || (props.sideChatDisabledReason ?? null) !== null,
+    usageLimits: props.onUsageLimitsCommand !== undefined,
+    codexFeedback: codexFeedbackOffered,
+    freshSession: props.onFreshSession !== undefined,
+  });
+  // `/feedback` runs with a pending reply too, which then stays in the bar.
+  const feedbackRunsLocally =
+    codexFeedbackOffered &&
+    holdsNoAttachedContext &&
+    parseCodexFeedbackCommand(composerSendState.trimmedPrompt) !== null;
+  const draftRunsLocally = commandRunsLocally || feedbackRunsLocally;
   const collapsedComposerPrimaryActionLabel = composerSendHeld
     ? gt("Sending when ready")
     : showResumeAction
       ? gt("Resume thread")
-      : props.resumeCompactionTokens !== null && !props.keepFullHistory
+      : props.resumeCompactionTokens !== null && !props.keepFullHistory && !draftRunsLocally
         ? gt("Open composer to compact and send")
         : gt("Send message");
   const showMobilePendingAnswerActions =
@@ -2805,31 +2830,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   );
   // An open question owns the space above the composer. Only a machine problem,
   // which is why an answer could not go through, stays beside it.
-  const replyTo = composerDraft?.replyTo ?? null;
-  // A send waits for compressing images, so they count as attached.
-  const holdsNoAttachedContext =
-    composerImages.length + composerFiles.length + allPreparingComposerImages.length === 0 &&
-    composerSendState.sendableTerminalContexts.length === 0 &&
-    composerPreviewAnnotations.length === 0 &&
-    composerReviewComments.length === 0 &&
-    composerThreadContexts.length === 0 &&
-    composerEnvironmentContexts.length === 0;
-  const codexFeedbackOffered = selectedProvider === "codex" && multipleModelSelections === null;
-  const commandRunsLocally = composerRunsDraftLocally({
-    text: prompt,
-    commandText: composerSendState.trimmedPrompt,
-    holdsOnlyText: holdsNoAttachedContext && replyTo === null,
-    sideChat: props.sideChatAvailable === true || (props.sideChatDisabledReason ?? null) !== null,
-    usageLimits: props.onUsageLimitsCommand !== undefined,
-    codexFeedback: codexFeedbackOffered,
-    freshSession: props.onFreshSession !== undefined,
-  });
-  // `/feedback` runs with a pending reply too, which then stays in the bar.
-  const feedbackRunsLocally =
-    codexFeedbackOffered &&
-    holdsNoAttachedContext &&
-    parseCodexFeedbackCommand(composerSendState.trimmedPrompt) !== null;
-  const draftRunsLocally = commandRunsLocally || feedbackRunsLocally;
   const replyBannerItems: readonly ComposerBannerStackItem[] = replyTo
     ? [
         {
@@ -3941,7 +3941,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     onClick={(event) => {
                       event.stopPropagation();
                       if (showResumeAction) onResume();
-                      else if (props.resumeCompactionTokens !== null && !props.keepFullHistory)
+                      else if (
+                        props.resumeCompactionTokens !== null &&
+                        !props.keepFullHistory &&
+                        !draftRunsLocally
+                      )
                         expandMobileComposer();
                       else submitComposer();
                     }}
