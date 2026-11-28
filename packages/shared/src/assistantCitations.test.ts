@@ -12,6 +12,7 @@ import {
 import {
   assistantCitationLabel,
   assistantCitationsToPlainText,
+  captureAssistantTextOpening,
   collectAssistantCitations,
   expandAssistantCitationsForProvider,
   formatAssistantCitationHref,
@@ -280,5 +281,13 @@ describe("assistant citation references", () => {
         "",
       ].join("\n"),
     );
+  });
+});
+
+describe("captureAssistantTextOpening", () => {
+  it("keeps the first 300 units of the trimmed text without splitting a surrogate pair", () => {
+    expect(captureAssistantTextOpening("a".repeat(400))?.text).toBe("a".repeat(300));
+    expect(captureAssistantTextOpening(`${"a".repeat(299)}😀 rest`)?.text).toBe("a".repeat(299));
+    expect(captureAssistantTextOpening("\n  Short answer.  \n")?.text).toBe("Short answer.");
   });
 });

@@ -13,9 +13,14 @@ import {
   type ModelSelection,
   type OrchestrationMessageContext,
   type OrchestrationV2ThreadProjection,
+  type ResponseContextRecord,
   type RuntimeMode,
   type ServerConfig,
 } from "@t3tools/contracts";
+import {
+  formatComposerContextReference,
+  responseContextRecord,
+} from "@t3tools/shared/composerContextReferences";
 import {
   v2Now,
   v2Projection,
@@ -37,6 +42,7 @@ const state = vi.hoisted(() => ({
     text: "Keep my draft",
     attachments: [] as DraftComposerImageAttachment[],
     context: undefined as OrchestrationMessageContext | undefined,
+    replyTo: undefined as ResponseContextRecord | undefined,
     modelSelection: undefined as ModelSelection | undefined,
     runtimeMode: undefined as RuntimeMode | undefined,
   },
@@ -49,6 +55,7 @@ const state = vi.hoisted(() => ({
   compactDueAt: "",
   setFreshPending: vi.fn(),
   clearDraft: vi.fn(),
+  setReplyTo: vi.fn(),
   appendAttachments: vi.fn(),
   mergeDraft: vi.fn(),
   fileHolds: [] as string[],
@@ -211,6 +218,7 @@ vi.mock("./use-composer-drafts", async () => {
     setFreshSessionPending: state.setFreshPending,
     clearComposerDraftContent: state.clearDraft,
     clearComposerDraft: state.clearDraft,
+    setComposerDraftReplyTo: state.setReplyTo,
     setComposerDraftText: (_key: string, text: string) => {
       state.draft.text = text;
     },
@@ -252,6 +260,30 @@ import { abortComposerDraftOperations } from "./composerDraftOperations";
 
 const NO_SIDE_CHATS = { startSideChat: async () => false };
 
+function pendingReply() {
+  const replyTo = responseContextRecord({
+    citation: {
+      version: 1,
+      environmentId: EnvironmentId.make("secondary"),
+      threadId: ThreadId.make("thread"),
+      messageId: MessageId.make("assistant"),
+      text: "First answer",
+      start: 0,
+      end: 12,
+      prefix: "",
+      suffix: "",
+    },
+    itemId: TurnItemId.make("reply"),
+    subagents: [],
+  });
+  const reference = formatComposerContextReference({
+    kind: "response",
+    contextId: replyTo.contextId,
+    label: replyTo.label,
+  });
+  return { replyTo, reference };
+}
+
 beforeEach(() => {
   state.grantedEnvironments = new Set(["primary"]);
   state.connectionState = "connected";
@@ -259,6 +291,7 @@ beforeEach(() => {
     text: "Keep my draft",
     attachments: [],
     context: undefined,
+    replyTo: undefined,
     modelSelection: undefined,
     runtimeMode: undefined,
   };
@@ -427,7 +460,7 @@ describe("mobile task permissions", () => {
     expect(state.enqueue).toHaveBeenLastCalledWith(expect.objectContaining({ freshContext: true }));
   });
 
-  it("sends a typed /clear with an approval redirect as that reply's text", async () => {
+  it("sends a typed /clear as text with an approval redirect or a pending reply", async () => {
     state.grantedEnvironments.add("secondary");
     state.serverConfig = {
       ...state.serverConfig,
@@ -440,6 +473,53 @@ describe("mobile task permissions", () => {
     expect(await composer.onSendMessage(undefined, beforeDispatch)).toBeNull();
     expect(beforeDispatch).toHaveBeenCalledWith("/clear", false);
     expect(state.setFreshPending).not.toHaveBeenCalled();
+
+    const { replyTo, reference } = pendingReply();
+    state.draft = { ...state.draft, replyTo };
+    expect(await useThreadComposerState(NO_SIDE_CHATS).onSendMessage()).toBe("message");
+    expect(state.enqueue).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ text: `${reference} /clear` }),
+    );
+    expect(state.setFreshPending).not.toHaveBeenCalled();
+  });
+
+  it("runs /feedback with a pending reply and keeps the reply for the next message", async () => {
+    state.grantedEnvironments.add("secondary");
+    const { replyTo } = pendingReply();
+    state.draft = { ...state.draft, text: "/feedback demo", replyTo };
+    expect(await useThreadComposerState(NO_SIDE_CHATS).onSendMessage()).toBeNull();
+    expect(state.feedback).toHaveBeenCalledExactlyOnceWith({
+      environmentId: "secondary",
+      input: { threadId: "thread", reason: "demo" },
+    });
+    expect(state.enqueue).not.toHaveBeenCalled();
+    expect(state.clearDraft).toHaveBeenCalledExactlyOnceWith("secondary:thread");
+    expect(state.setReplyTo).toHaveBeenCalledExactlyOnceWith("secondary:thread", replyTo);
+    // Put back after the clear, which drops the reply with the text.
+    expect(state.setReplyTo.mock.invocationCallOrder[0]).toBeGreaterThan(
+      state.clearDraft.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("hands a pending reply to an approval as added context and keeps it when refused", async () => {
+    state.grantedEnvironments.add("secondary");
+    const { replyTo } = pendingReply();
+    state.draft = { ...state.draft, replyTo };
+    const refuse = vi.fn(async () => false);
+    expect(await useThreadComposerState(NO_SIDE_CHATS).onSendMessage(undefined, refuse)).toBeNull();
+    expect(refuse).toHaveBeenCalledWith("Keep my draft", true);
+    expect(state.clearDraft).not.toHaveBeenCalled();
+
+    // A reply cancelled while the redirect declined is no longer what the user sent.
+    const cancelDuringDecline = async () => {
+      state.draft = { ...state.draft, replyTo: undefined };
+      return true;
+    };
+    expect(
+      await useThreadComposerState(NO_SIDE_CHATS).onSendMessage(undefined, cancelDuringDecline),
+    ).toBeNull();
+    expect(state.enqueue).not.toHaveBeenCalled();
+    expect(state.clearDraft).not.toHaveBeenCalled();
   });
 
   it("starts a side chat for /side instead of sending to the thread", async () => {
@@ -544,6 +624,28 @@ describe("mobile task permissions", () => {
     expect(Alert.alert).toHaveBeenCalledOnce();
   });
 
+  it("starts a side chat from /side with only a pending reply and restores the reply on failure", async () => {
+    state.grantedEnvironments.add("secondary");
+    state.serverConfig = {
+      ...state.serverConfig,
+      environment: { capabilities: { sideChats: true } },
+    } as ServerConfig;
+    const { replyTo, reference } = pendingReply();
+    state.draft = { ...state.draft, text: "/side", replyTo };
+    const startSideChat = vi.fn(async () => false);
+    state.mergeDraft.mockResolvedValueOnce(undefined);
+    expect(await useThreadComposerState({ startSideChat }).onSendMessage()).toBeNull();
+    expect(startSideChat).toHaveBeenCalledExactlyOnceWith(
+      expect.anything(),
+      expect.objectContaining({ text: reference, context: { version: 1, records: [replyTo] } }),
+      expect.anything(),
+    );
+    expect(state.mergeDraft).toHaveBeenCalledExactlyOnceWith(
+      "secondary:thread",
+      expect.objectContaining({ text: "/side", replyTo }),
+    );
+  });
+
   it("rechecks a retained send callback before clearing or queueing the draft", async () => {
     state.grantedEnvironments.add("secondary");
     const composer = useThreadComposerState(NO_SIDE_CHATS);
@@ -560,6 +662,36 @@ describe("mobile task permissions", () => {
         text: "Keep my draft",
       }),
     );
+  });
+
+  it("attaches a pending reply on send and restores it if enqueue fails", async () => {
+    state.grantedEnvironments.add("secondary");
+    const { replyTo, reference } = pendingReply();
+    state.draft = { ...state.draft, text: "Follow up", replyTo };
+    const composer = useThreadComposerState(NO_SIDE_CHATS);
+
+    expect(await composer.onSendMessage()).toBe("message");
+    expect(state.enqueue).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        text: `${reference} Follow up`,
+        context: { version: 1, records: [replyTo] },
+      }),
+    );
+    expect(state.clearDraft).toHaveBeenCalledExactlyOnceWith("secondary:thread", {
+      deferAttachmentCleanup: true,
+    });
+
+    vi.clearAllMocks();
+    state.enqueue.mockRejectedValueOnce(new Error("disk full"));
+    const restored = new Promise((resolve) => {
+      state.mergeDraft.mockImplementationOnce(async (...args) => resolve(args));
+    });
+    expect(await composer.onSendMessage()).toBe("message");
+    expect(await restored).toEqual([
+      "secondary:thread",
+      { text: "Follow up", context: undefined, replyTo, attachments: [] },
+    ]);
+    expect(state.mergeDraft).toHaveBeenCalledOnce();
   });
 
   it("queues a goal command with the thread's settings and leaves the draft alone", async () => {

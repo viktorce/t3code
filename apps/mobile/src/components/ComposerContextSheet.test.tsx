@@ -40,6 +40,7 @@ vi.mock("./ui/Sheet", () => ({ Sheet: () => null }));
 vi.mock("./ui/VideoPreviewModal", () => ({ VideoPreviewModal: () => null }));
 vi.mock("./ComposerContextAttachment", () => ({ ComposerContextAttachment: () => null }));
 vi.mock("../native/useOpenPullRequest", () => ({ useOpenPullRequest: () => vi.fn() }));
+vi.mock("../features/threads/useOpenLinkedThread", () => ({ useOpenLinkedThread: () => vi.fn() }));
 vi.mock("../features/files/SourceFileSurface", () => ({ SourceFileSurface: () => null }));
 vi.mock("../features/review/ReviewCommentCard", () => ({
   ReviewCommentCard: () => null,

@@ -4,16 +4,11 @@ import {
   MessageId,
   OrchestrationMessageContext,
   ThreadId,
-  TurnItemId,
   type PreviewAnnotationPayload,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { upgradeLegacyContextMessage } from "@t3tools/shared/composerContextLegacy";
 
-import {
-  formatInlineContextReference,
-  removeInlineContextReference,
-} from "./composerContextReferences";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -25,7 +20,6 @@ import {
   previewAnnotationFromRecord,
   pullRequestContextKindLabel,
   resolveUserMessageContext,
-  responseContextRecord,
   reviewCommentContextLabel,
   selectedMessageContextFragment,
   reviewCommentContextRecord,
@@ -234,26 +228,6 @@ describe("composerContextRecords", () => {
     expect(betweenWords.label).toBe(`${"a".repeat(46)}…`);
   });
 
-  it("shortens a long reply label without splitting an emoji", () => {
-    const text = `${"a".repeat(63)}😀 trailing`;
-    const record = responseContextRecord({
-      citation: {
-        version: 1,
-        environmentId: EnvironmentId.make("environment-1"),
-        threadId: ThreadId.make("thread-1"),
-        messageId: MessageId.make("message-1"),
-        text,
-        start: 0,
-        end: text.length,
-        prefix: "",
-        suffix: "",
-      },
-      itemId: TurnItemId.make("item-1"),
-      subagents: [],
-    });
-    expect(record.label).toBe("a".repeat(63));
-  });
-
   it("restores multiple edits on one target without parsing display strings", () => {
     const styleChanges = [
       ...annotation.styleChanges,
@@ -276,25 +250,6 @@ describe("composerContextRecords", () => {
     const record = previewAnnotationContextRecord({ ...annotation, comment: "c".repeat(8_001) });
     expect(record.comment.endsWith("… truncated …")).toBe(true);
     expect(decodeMessageContext({ version: 1, records: [record] }).records).toEqual([record]);
-  });
-
-  it("removes an expired terminal chip by its kind-scoped id, not the producer id", () => {
-    const context = {
-      id: "term-1",
-      threadId: ThreadId.make("t"),
-      createdAt: "2026-01-01T00:00:00.000Z",
-      terminalId: "default",
-      terminalLabel: "Terminal 1",
-      lineStart: 3,
-      lineEnd: 4,
-      text: "boom",
-    };
-    const reference = terminalContextReference(context);
-    expect(reference.contextId).toBe("terminal_term-1");
-
-    const prompt = `prose ${formatInlineContextReference(reference)} tail`;
-    expect(removeInlineContextReference(prompt, context.id).prompt).toBe(prompt);
-    expect(removeInlineContextReference(prompt, reference.contextId).prompt).toBe("prose tail");
   });
 
   it("clamps oversized review and terminal selections so the records still encode", () => {

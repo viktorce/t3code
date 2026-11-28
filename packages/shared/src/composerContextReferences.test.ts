@@ -4,6 +4,7 @@ import {
   EnvironmentId,
   MessageId,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -12,9 +13,12 @@ import {
   ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
   collectComposerContextReferences,
   formatComposerContextHref,
+  formatComposerContextReference,
   isImageReferencesOnly,
   parseComposerContextHref,
   projectComposerContextForProvider,
+  removeComposerContextReference,
+  responseContextRecord,
   restoreAttachmentOnlyBootstrapPrompt,
   stripAttachmentOnlyBootstrapPrompt,
   threadContextRecord,
@@ -22,6 +26,7 @@ import {
   threadLinkContextReferences,
   toComposerContextId,
   toKindScopedComposerContextId,
+  withReplyReference,
 } from "./composerContextReferences.ts";
 
 const ctx = (value: string) => value as ComposerContextId;
@@ -687,5 +692,69 @@ describe("threadLinkContextReferences", () => {
       () => undefined,
     );
     expect(pasted).toEqual({ text, records: [] });
+  });
+});
+
+describe("responseContextRecord", () => {
+  it("shortens a long reply label without splitting an emoji", () => {
+    const text = `${"a".repeat(63)}😀 trailing`;
+    const record = responseContextRecord({
+      citation: {
+        version: 1,
+        environmentId: EnvironmentId.make("environment-1"),
+        threadId: ThreadId.make("thread-1"),
+        messageId: MessageId.make("message-1"),
+        text,
+        start: 0,
+        end: text.length,
+        prefix: "",
+        suffix: "",
+      },
+      itemId: TurnItemId.make("item-1"),
+      subagents: [],
+    });
+    expect(record.label).toBe("a".repeat(63));
+  });
+
+  it("leads the prompt with the reply's reference once", () => {
+    const text = "First answer";
+    const record = responseContextRecord({
+      citation: {
+        version: 1,
+        environmentId: EnvironmentId.make("environment-1"),
+        threadId: ThreadId.make("thread-1"),
+        messageId: MessageId.make("message-1"),
+        text,
+        start: 0,
+        end: text.length,
+        prefix: "",
+        suffix: "",
+      },
+      itemId: TurnItemId.make("item-1"),
+      subagents: [],
+    });
+    const reference = formatComposerContextReference({
+      kind: "response",
+      contextId: record.contextId,
+      label: record.label,
+    });
+    expect(withReplyReference("Follow up", record)).toBe(`${reference} Follow up`);
+    expect(withReplyReference(`Follow up ${reference}`, record)).toBe(`Follow up ${reference}`);
+  });
+});
+
+describe("removeComposerContextReference", () => {
+  it("removes an expired terminal chip by its kind-scoped id, not the producer id", () => {
+    const contextId = toKindScopedComposerContextId("terminal", "term-1");
+    expect(contextId).toBe("terminal_term-1");
+
+    const reference = formatComposerContextReference({
+      kind: "terminal",
+      contextId,
+      label: "Terminal 1 lines 3-4",
+    });
+    const prompt = `prose ${reference} tail`;
+    expect(removeComposerContextReference(prompt, "term-1").prompt).toBe(prompt);
+    expect(removeComposerContextReference(prompt, contextId).prompt).toBe("prose tail");
   });
 });

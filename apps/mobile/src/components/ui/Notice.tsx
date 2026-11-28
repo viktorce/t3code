@@ -9,6 +9,11 @@ import { GlassSurface } from "./GlassSurface";
 
 export function Notice(props: {
   readonly message: string;
+  readonly action?: {
+    readonly title?: string;
+    readonly accessibilityLabel: string;
+    readonly onPress: () => void;
+  };
   readonly tone?: "default" | "danger";
   readonly icon?: AppSymbolName;
   readonly iconTone?: "default" | "danger";
@@ -18,11 +23,13 @@ export function Notice(props: {
 }) {
   const gt = useGT();
   const danger = props.tone === "danger";
+  const hasAction = props.action !== undefined;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- announces the message to VoiceOver through AccessibilityInfo
   useEffect(() => {
-    // Live regions reach TalkBack; VoiceOver needs an explicit announcement.
-    if (Platform.OS === "ios") AccessibilityInfo.announceForAccessibility(props.message);
-  }, [props.message]);
+    // Live regions reach TalkBack; VoiceOver needs an explicit announcement for passive notices.
+    if (!hasAction && Platform.OS === "ios")
+      AccessibilityInfo.announceForAccessibility(props.message);
+  }, [hasAction, props.message]);
 
   const content = (
     <View className="flex-row items-start gap-3">
@@ -39,18 +46,50 @@ export function Notice(props: {
           />
         </View>
       ) : null}
-      <AppText
-        selectable
-        textRole="footnote"
-        accessibilityLiveRegion="polite"
-        className={cn(
-          "min-w-0 flex-1",
-          danger ? "text-danger-foreground" : "text-foreground",
-          !props.floating && "font-t3-medium",
-        )}
-      >
-        {props.message}
-      </AppText>
+      {props.action ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={props.action.accessibilityLabel}
+          onPress={props.action.onPress}
+          className="min-w-0 flex-1 active:opacity-70"
+        >
+          {props.action.title ? (
+            <AppText
+              textRole="caption"
+              className={cn(
+                "font-t3-medium",
+                danger ? "text-danger-foreground" : "text-foreground-muted",
+              )}
+              numberOfLines={1}
+            >
+              {props.action.title}
+            </AppText>
+          ) : null}
+          <AppText
+            textRole="footnote"
+            numberOfLines={2}
+            className={cn(
+              danger ? "text-danger-foreground" : "text-foreground",
+              !props.floating && "font-t3-medium",
+            )}
+          >
+            {props.message}
+          </AppText>
+        </Pressable>
+      ) : (
+        <AppText
+          selectable
+          textRole="footnote"
+          accessibilityLiveRegion="polite"
+          className={cn(
+            "min-w-0 flex-1",
+            danger ? "text-danger-foreground" : "text-foreground",
+            !props.floating && "font-t3-medium",
+          )}
+        >
+          {props.message}
+        </AppText>
+      )}
       {props.onDismiss ? (
         <Pressable
           accessibilityRole="button"

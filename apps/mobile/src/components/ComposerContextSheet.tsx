@@ -10,8 +10,10 @@ import type {
   ElementContextSource,
   EnvironmentId,
   ProjectId,
+  ResponseContextRecord,
   ScopedThreadRef,
 } from "@t3tools/contracts";
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { changeRequestTermKind } from "../lib/changeRequestTerm";
@@ -34,12 +36,15 @@ import { AppText as Text } from "./ui/AppText";
 import { Sheet } from "./ui/Sheet";
 import { useAppearancePreferences } from "../features/settings/appearance/AppearancePreferencesProvider";
 import { getMobileTerminalTheme } from "../features/terminal/terminalTheme";
+import { requestThreadMessageJump } from "../features/threads/threadMessageJump";
+import { useOpenLinkedThread } from "../features/threads/useOpenLinkedThread";
 
 function ContextField(props: {
   label: string;
   value: string | null | undefined;
   code?: boolean;
   language?: "html" | "css";
+  numberOfLines?: number;
 }) {
   if (!props.value) return null;
   return (
@@ -59,6 +64,7 @@ function ContextField(props: {
       ) : (
         <Text
           selectable
+          numberOfLines={props.numberOfLines}
           className={props.code ? "font-mono text-sm text-foreground" : "text-base text-foreground"}
         >
           {props.value}
@@ -91,6 +97,47 @@ function ContextSource(props: { source: ElementContextSource | null }) {
       value={[source.functionName, location].filter(Boolean).join("\n")}
       code
     />
+  );
+}
+
+function ResponseContextSection(props: {
+  readonly record: ResponseContextRecord;
+  readonly onClose: () => void;
+}) {
+  const gt = useGT();
+  const openLinkedThread = useOpenLinkedThread();
+  const { citation, subagents } = props.record;
+  return (
+    <View className="gap-3">
+      <ContextField
+        label={gt("Agents", { $context: "the subagents a response reported on" })}
+        value={subagents?.map((subagent) => subagent.title).join(", ")}
+        numberOfLines={2}
+      />
+      <View className="flex-row gap-3 rounded-2xl bg-grouped-card p-4">
+        <View className="w-1 rounded-full bg-primary" />
+        {/* One paragraph, as on web's reply card, short enough that the button stays in view
+            at the sheet's first height. */}
+        <Text
+          selectable
+          textRole="body"
+          numberOfLines={4}
+          className="min-w-0 flex-1 text-foreground"
+        >
+          {citation.text.replace(/\s+/g, " ")}
+        </Text>
+      </View>
+      <Button
+        label={gt("Go to message")}
+        tone="secondary"
+        onPress={() => {
+          props.onClose();
+          requestThreadMessageJump(scopedThreadKey(citation), citation.messageId);
+          openLinkedThread(citation);
+        }}
+        fullWidth
+      />
+    </View>
   );
 }
 
@@ -403,6 +450,9 @@ export function ComposerContextSheet(props: {
                   />
                 ) : null}
               </View>
+            ) : null}
+            {record.kind === "response" ? (
+              <ResponseContextSection record={record} onClose={props.onClose} />
             ) : null}
             {record.kind === "environment" ? (
               <ContextField label={gt("Machine", { $context: "computer" })} value={record.label} />

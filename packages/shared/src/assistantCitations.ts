@@ -245,6 +245,16 @@ export function createAssistantTextSelector(
   };
 }
 
+/** How much of a response a reply carries: enough to recognise it, not to resend it. */
+const RESPONSE_OPENING_LENGTH = 300;
+
+export function captureAssistantTextOpening(text: string): AssistantTextSelector | null {
+  const rawStart = text.length - text.trimStart().length;
+  let rawEnd = Math.min(text.trimEnd().length, rawStart + RESPONSE_OPENING_LENGTH);
+  if (splitsSurrogatePair(text, rawEnd)) rawEnd -= 1;
+  return createAssistantTextSelector(text, rawStart, rawEnd);
+}
+
 /** Offsets use normalized UTF-16 units. Saved offsets may drift, so they cannot break context ties. */
 export function findAssistantCitationText(
   text: string,

@@ -1,6 +1,7 @@
 import { PROVIDER_SEND_TURN_MAX_ATTACHMENTS } from "@t3tools/contracts";
 import { msg } from "gt-react-native";
 import { m } from "../i18n/messages";
+import { extractReplyFromMessage } from "../lib/composerContext";
 import { scopedThreadKey } from "../lib/scopedEntities";
 import { appAtomRegistry } from "./atom-registry";
 import {
@@ -49,8 +50,14 @@ export async function editPendingThreadMessage(message: QueuedThreadMessage): Pr
     if (attachmentIds.size > PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
       throw new Error(m(msg("Remove attachments from the composer before editing this message.")));
     }
+    const extracted = extractReplyFromMessage(message.text, message.context);
     try {
-      await mergeComposerDraftContent(draftKey, message);
+      await mergeComposerDraftContent(draftKey, {
+        ...message,
+        text: extracted.text,
+        context: extracted.context,
+        ...(extracted.replyTo ? { replyTo: extracted.replyTo } : {}),
+      });
     } finally {
       rollback = { snapshot, merged: getComposerDraftSnapshot(draftKey) };
     }

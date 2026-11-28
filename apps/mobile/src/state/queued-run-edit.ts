@@ -3,6 +3,7 @@ import type {
   MessageId,
   ModelSelection,
   OrchestrationMessageContext,
+  ResponseContextRecord,
   RunId,
   UploadChatAttachment,
 } from "@t3tools/contracts";
@@ -17,7 +18,7 @@ import {
 } from "@t3tools/client-runtime/queued-run-edit";
 
 import { m } from "../i18n/messages";
-import { uploadedComposerContext } from "../lib/composerContext";
+import { extractReplyFromMessage, uploadedComposerContext } from "../lib/composerContext";
 import { appAtomRegistry } from "./atom-registry";
 import { abortComposerDraftOperations } from "./composerDraftOperations";
 import { queuedEditDraftKey } from "./queued-edit-draft-key";
@@ -27,6 +28,7 @@ import {
   getComposerDraftSnapshot,
   mergeComposerDraftContent,
   setComposerDraftContext,
+  setComposerDraftReplyTo,
   setComposerDraftText,
   updateComposerDraftSettings,
 } from "./use-composer-drafts";
@@ -37,6 +39,7 @@ export interface QueuedRunEdit {
   readonly runId: RunId;
   readonly messageId: MessageId;
   readonly originalText: string;
+  readonly originalReplyTo?: ResponseContextRecord | null;
   readonly existingAttachments: ReadonlyArray<ChatAttachment>;
   readonly context?: OrchestrationMessageContext;
   /** Removing a server attachment changes the message even when the draft looks untouched. */
@@ -84,7 +87,10 @@ function exitQueuedRunEdit(threadKey: string, edit: QueuedRunEdit): void {
   const editDraftKey = queuedEditDraftKey(threadKey, edit.runId);
   const editDraft = getComposerDraftSnapshot(editDraftKey);
   const threadDraft = getComposerDraftSnapshot(threadKey);
-  const editRestorable = editDraft.text.trim().length > 0 || editDraft.attachments.length > 0;
+  const editRestorable =
+    editDraft.text.trim().length > 0 ||
+    editDraft.attachments.length > 0 ||
+    editDraft.replyTo !== undefined;
   const modelChanged =
     editDraft.modelSelection !== undefined &&
     !Equal.equals(editDraft.modelSelection, edit.modelSelection);
@@ -93,12 +99,14 @@ function exitQueuedRunEdit(threadKey: string, edit: QueuedRunEdit): void {
       modelChanged ||
       editDraft.text !== edit.originalText ||
       editDraft.attachments.length > 0 ||
-      edit.removedExistingAttachment === true,
+      edit.removedExistingAttachment === true ||
+      !Equal.equals(editDraft.replyTo ?? null, edit.originalReplyTo ?? null),
     // A cleared edit has nothing to put back, so it can only be discarded.
     threadDraftEmpty:
       editRestorable &&
       threadDraft.text.trim().length === 0 &&
-      threadDraft.attachments.length === 0,
+      threadDraft.attachments.length === 0 &&
+      threadDraft.replyTo === undefined,
   });
   if (recovery === "kept") {
     if (modelChanged)
@@ -108,6 +116,7 @@ function exitQueuedRunEdit(threadKey: string, edit: QueuedRunEdit): void {
       text: editDraft.text,
       attachments: editDraft.attachments,
       ...(editDraft.context ? { context: editDraft.context } : {}),
+      ...(editDraft.replyTo ? { replyTo: editDraft.replyTo } : {}),
     }).catch((error: unknown) => {
       console.warn("[queued-run-edit] could not persist the recovered edit", error);
     });
@@ -135,15 +144,25 @@ export function beginQueuedRunEdit(
   // The composer moves off the thread draft, so a paste or pick still running for it is dropped.
   abortComposerDraftOperations(threadKey);
   const draftKey = queuedEditDraftKey(threadKey, edit.runId);
-  const originalText = stripAttachmentOnlyBootstrapPrompt(edit.originalText);
+  const extracted = extractReplyFromMessage(
+    stripAttachmentOnlyBootstrapPrompt(edit.originalText),
+    edit.context,
+  );
+  const originalText = extracted.text;
+  const originalReplyTo = extracted.replyTo ?? null;
   clearComposerDraft(draftKey);
   setComposerDraftText(draftKey, originalText);
   if (edit.modelSelection && !edit.followsThreadSelection)
     updateComposerDraftSettings(draftKey, { modelSelection: edit.modelSelection });
-  setComposerDraftContext(draftKey, edit.context);
+  setComposerDraftContext(draftKey, extracted.context);
+  if (originalReplyTo) setComposerDraftReplyTo(draftKey, originalReplyTo);
   queuedRunEdits.begin(
     threadKey,
-    { ...edit, originalText },
+    {
+      ...edit,
+      originalText,
+      ...(originalReplyTo ? { originalReplyTo } : {}),
+    },
     { runs, onRunLeftQueue: exitQueuedRunEdit },
   );
 }
@@ -174,7 +193,11 @@ export function endQueuedRunEdit(
  */
 export const startQueuedRunEditSave = queuedRunEdits.startSave;
 
-/** Attachments replace wholesale; resend kept server attachments with uploads in composer order. */
+/**
+ * Attachments and context replace wholesale; resend kept server attachments with uploads in
+ * composer order. An omitted context keeps the stored records, so a save with none left sends
+ * an empty list.
+ */
 export function resolveQueuedEditPayload(input: {
   readonly edit: QueuedRunEdit;
   readonly draftContext: OrchestrationMessageContext | undefined;
@@ -182,7 +205,7 @@ export function resolveQueuedEditPayload(input: {
   readonly uploaded: ReadonlyArray<ChatAttachment | UploadChatAttachment>;
 }): {
   readonly attachments: ReadonlyArray<ChatAttachment | UploadChatAttachment>;
-  readonly context: OrchestrationMessageContext | undefined;
+  readonly context: OrchestrationMessageContext;
 } {
   const attachments = [...input.edit.existingAttachments, ...input.uploaded];
   const rebound = uploadedComposerContext(
@@ -190,17 +213,13 @@ export function resolveQueuedEditPayload(input: {
     input.draftAttachments,
     input.uploaded,
   );
-  if (rebound === undefined) return { attachments, context: undefined };
   const liveIds = new Set(
     attachments.flatMap((attachment) =>
       "id" in attachment && attachment.id ? [attachment.id] : [],
     ),
   );
-  const records = rebound.records.filter(
+  const records = (rebound?.records ?? []).filter(
     (record) => !("attachmentId" in record) || liveIds.has(record.attachmentId),
   );
-  return {
-    attachments,
-    context: records.length > 0 ? { version: 1, records } : undefined,
-  };
+  return { attachments, context: { version: 1, records } };
 }

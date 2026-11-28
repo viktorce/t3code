@@ -307,6 +307,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     text: draftMessage,
     attachments: draftAttachments,
     context: draftContext,
+    replyTo: draftReplyTo,
   } = useComposerDraft(composerDraftKey);
   const queuedEdit = props.queuedEdit ?? null;
   const hasContent =
@@ -317,7 +318,11 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
   const onResumeQueue = props.onResumeQueue;
   const [resumingQueue, setResumingQueue] = useState(false);
   const showResumeAction =
-    !hasContent && !showStopAction && queuedEdit === null && onResumeQueue !== null;
+    !hasContent &&
+    draftReplyTo === undefined &&
+    !showStopAction &&
+    queuedEdit === null &&
+    onResumeQueue !== null;
   const handleResumeQueue = async () => {
     if (resumingQueue || onResumeQueue === null) return;
     setResumingQueue(true);
@@ -383,7 +388,8 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     );
   const draftRunsLocally = composerRunsDraftLocally({
     text: draftMessage,
-    holdsOnlyText: draftAttachments.length === 0,
+    holdsNoAttachedContext: draftAttachments.length === 0,
+    replyPending: draftReplyTo !== undefined,
     // A redirect's text answers its approval, so `/side` there is that text.
     sideChat: !props.redirectsApproval,
     usageLimits: usageLimitsOffered,
@@ -562,7 +568,12 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     // Sending now would leave a still-converting pasted image out of the turn, so wait for it.
     if (nativeImageSubmit.deferSend(followUp)) return;
     if (pendingPastedTextAttachmentCountRef.current > 0) return;
-    if (usageLimitsOffered && isUsageLimitsCommand(draftMessage) && draftAttachments.length === 0) {
+    if (
+      usageLimitsOffered &&
+      isUsageLimitsCommand(draftMessage) &&
+      draftAttachments.length === 0 &&
+      draftReplyTo === undefined
+    ) {
       if (openUsageLimits()) onChangeDraftMessage("");
       return;
     }
@@ -577,6 +588,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
         pendingPastedTextAttachmentCountRef.current === 0 &&
         pendingNativeImagePasteCountRef.current === 0 &&
         draft.text === draftAtSend.text &&
+        JSON.stringify(draft.replyTo) === JSON.stringify(draftAtSend.replyTo) &&
         draft.attachments.length === draftAtSend.attachments.length &&
         draft.attachments.every(
           (attachment, index) => attachment.id === draftAtSend.attachments[index]?.id,

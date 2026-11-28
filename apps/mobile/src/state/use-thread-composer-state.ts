@@ -55,6 +55,7 @@ import {
   reidentifyComposerContext,
   serializeComposerMessageForServer,
   uploadedComposerContext,
+  withReplyMessage,
 } from "../lib/composerContext";
 import { uuidv4 } from "../lib/uuid";
 import { useNowMinuteMs } from "../lib/clock";
@@ -100,6 +101,7 @@ import {
   mergeComposerDraftContent,
   removeComposerDraftAttachment,
   scheduleUnusedComposerAttachmentCleanup,
+  setComposerDraftReplyTo,
   setComposerDraftText,
   setFreshSessionPending,
   useComposerDraft,
@@ -544,6 +546,7 @@ export function useThreadComposerState(input: {
       );
       return;
     }
+    const editForSave = withReplyMessage(text, draft.context, draft.replyTo);
     const finishSave = startQueuedRunEditSave(threadKey);
     if (finishSave === null) return;
     savingQueuedEditRef.current = true;
@@ -579,7 +582,7 @@ export function useThreadComposerState(input: {
     }
     const payload = resolveQueuedEditPayload({
       edit,
-      draftContext: draft.context,
+      draftContext: editForSave.context,
       draftAttachments: draft.attachments,
       uploaded: prepared.value.attachments,
     });
@@ -588,14 +591,17 @@ export function useThreadComposerState(input: {
       input: {
         threadId: thread.id,
         runId: edit.runId,
-        text: restoreAttachmentOnlyBootstrapPrompt(text, payload.attachments.length > 0),
+        text: restoreAttachmentOnlyBootstrapPrompt(
+          editForSave.text,
+          payload.attachments.length > 0,
+        ),
         ...(!edit.followsThreadSelection || draft.modelSelection
           ? { modelSelection: draft.modelSelection ?? thread.modelSelection }
           : {}),
         edit: {
           messageId: edit.messageId,
           attachments: payload.attachments,
-          ...(payload.context ? { context: payload.context } : {}),
+          context: payload.context,
         },
       },
     });
@@ -694,7 +700,9 @@ export function useThreadComposerState(input: {
       return null;
     }
 
-    const contextBlockReason = composerContextSendBlockReason(draft.context);
+    const replyTo = draft.replyTo ?? null;
+    const messageForSend = withReplyMessage(text, draft.context, replyTo);
+    const contextBlockReason = composerContextSendBlockReason(messageForSend.context);
     if (contextBlockReason) {
       Dialog.alert(m(msg("Too much context")), contextBlockReason);
       return null;
@@ -703,12 +711,13 @@ export function useThreadComposerState(input: {
     // A redirect's text answers its approval, so `/side` there is that text, not the command.
     const sideChatCommand = beforeDispatch === undefined ? parseSideChatCommand(text) : null;
     if (sideChatCommand) {
+      const sideChatMessage = withReplyMessage(sideChatCommand.prompt, draft.context, replyTo);
       if (sideChatUnavailableReason !== null) {
         Dialog.alert(m(msg("Side chat not started")), sideChatUnavailableReason);
       } else if (
         sideChatCommand.prompt.length === 0 &&
         attachments.length === 0 &&
-        (draft.context?.records.length ?? 0) === 0
+        (sideChatMessage.context?.records.length ?? 0) === 0
       ) {
         Dialog.alert(
           m(msg("Ask a side question")),
@@ -740,13 +749,13 @@ export function useThreadComposerState(input: {
             {
               ...serializeComposerMessageForServer(
                 restoreAttachmentOnlyBootstrapPrompt(
-                  sideChatCommand.prompt,
+                  sideChatMessage.text,
                   prepared.attachments.length > 0,
                 ),
-                uploadedComposerContext(draft.context, attachments, prepared.attachments),
+                uploadedComposerContext(sideChatMessage.context, attachments, prepared.attachments),
               ),
               attachments: prepared.attachments,
-              titleSeed: deriveThreadTitleSeed({ text: sideChatCommand.prompt, attachments }, m),
+              titleSeed: deriveThreadTitleSeed({ text: sideChatMessage.text, attachments }, m),
             },
             {
               runtimeMode: draft.runtimeMode ?? thread.runtimeMode,
@@ -762,6 +771,7 @@ export function useThreadComposerState(input: {
           await mergeComposerDraftContent(threadKey, {
             text: draft.text,
             context: draft.context,
+            ...(draft.replyTo ? { replyTo: draft.replyTo } : {}),
             attachments: [],
           }).catch(() => undefined);
           appendComposerDraftAttachments(threadKey, attachments, { restore: true });
@@ -785,6 +795,7 @@ export function useThreadComposerState(input: {
       thread.latestRun != null &&
       attachments.length === 0 &&
       draft.context === undefined &&
+      replyTo === null &&
       isClearComposerCommand(text)
     ) {
       setFreshSessionPending(threadKey, true);
@@ -821,7 +832,11 @@ export function useThreadComposerState(input: {
             command: text,
             createdAt: metadata.createdAt,
           },
-          clearDraft: () => clearComposerDraftContent(threadKey),
+          clearDraft: () => {
+            clearComposerDraftContent(threadKey);
+            // The reply waits in the bar for the next message.
+            if (replyTo) setComposerDraftReplyTo(threadKey, replyTo);
+          },
           onUpdate: (submission) => {
             setFeedbackSubmissionsByThreadKey((current) => {
               const existing = current[threadKey] ?? [];
@@ -848,7 +863,7 @@ export function useThreadComposerState(input: {
     if (beforeDispatch !== undefined) {
       const response = await beforeDispatch(
         text,
-        attachments.length > 0 || draft.context !== undefined,
+        attachments.length > 0 || draft.context !== undefined || replyTo !== null,
       );
       if (!response) return null;
       // A context paste still landing, or any draft or settings change while approvals were
@@ -858,6 +873,7 @@ export function useThreadComposerState(input: {
       if (
         current.text !== draft.text ||
         JSON.stringify(current.context) !== JSON.stringify(draft.context) ||
+        JSON.stringify(current.replyTo) !== JSON.stringify(draft.replyTo) ||
         JSON.stringify(current.modelSelection) !== JSON.stringify(draft.modelSelection) ||
         current.runtimeMode !== draft.runtimeMode ||
         current.interactionMode !== draft.interactionMode ||
@@ -898,7 +914,7 @@ export function useThreadComposerState(input: {
       !freshContext &&
       followUpDispatchMode === null &&
       appAtomRegistry.get(fullHistoryThreadKeysAtom)[threadKey] !== true &&
-      resumeCompactionTokens(modelSelection, text, metadata.createdAt) !== null;
+      resumeCompactionTokens(modelSelection, messageForSend.text, metadata.createdAt) !== null;
     const messageId = MessageId.make(metadata.messageId);
     onWillEnqueue?.();
     clearThreadComposerError(threadKey);
@@ -907,9 +923,9 @@ export function useThreadComposerState(input: {
       threadId: selectedThreadShell.id,
       messageId,
       commandId: CommandId.make(metadata.commandId),
-      text,
+      text: messageForSend.text,
       attachments,
-      context: draft.context,
+      context: messageForSend.context,
       modelSelection,
       runtimeMode: draft.runtimeMode ?? thread.runtimeMode,
       interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -933,6 +949,7 @@ export function useThreadComposerState(input: {
         void mergeComposerDraftContent(threadKey, {
           text,
           context: draft.context,
+          ...(draft.replyTo ? { replyTo: draft.replyTo } : {}),
           attachments: [],
         });
         appendComposerDraftAttachments(threadKey, attachments, { restore: true });

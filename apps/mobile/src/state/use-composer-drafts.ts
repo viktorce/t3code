@@ -13,6 +13,7 @@ import {
   ProjectId as ProjectIdSchema,
   ProviderInteractionMode as ProviderInteractionModeSchema,
   ProviderOptionSelection as ProviderOptionSelectionSchema,
+  ResponseContextRecord,
   RuntimeMode as RuntimeModeSchema,
   type EnvironmentId,
   type ModelSelection,
@@ -35,7 +36,11 @@ import type {
 import { draftModelPickMatchesThread } from "@t3tools/shared/model";
 
 import { writeFileAtomically } from "../lib/atomic-file";
-import { createComposerContextHistory, referencedComposerContext } from "../lib/composerContext";
+import {
+  createComposerContextHistory,
+  referencedComposerContext,
+  withReplyMessage,
+} from "../lib/composerContext";
 import { isQueuedEditDraftKey } from "./queued-edit-draft-key";
 import {
   collectComposerContextReferences,
@@ -355,6 +360,21 @@ export function createComposerDraftContextHistory() {
   };
 }
 
+export function setComposerDraftReplyTo(
+  draftKey: string,
+  replyTo: ResponseContextRecord | null,
+): void {
+  updateComposerDrafts((current) => {
+    const existing = normalizeDraft(current[draftKey]);
+    if (replyTo === null && existing.replyTo === undefined) return current;
+    if (replyTo !== null) {
+      return withComposerDraft(current, draftKey, { ...existing, replyTo });
+    }
+    const { replyTo: _replyTo, ...rest } = existing;
+    return withComposerDraft(current, draftKey, rest);
+  });
+}
+
 export function setComposerDraftContext(
   draftKey: string,
   context: OrchestrationMessageContext | undefined,
@@ -443,6 +463,7 @@ const isComposerDraftPersistenceError = Schema.is(ComposerDraftPersistenceError)
 export interface ComposerDraft {
   readonly text: string;
   readonly context?: OrchestrationMessageContext;
+  readonly replyTo?: ResponseContextRecord;
   readonly attachments: ReadonlyArray<DraftComposerAttachment>;
   readonly importedShareIds?: ReadonlyArray<string>;
   readonly modelSelection?: ModelSelection;
@@ -463,6 +484,7 @@ export interface ComposerDraftProject {
 export interface ComposerDraftContent {
   readonly text: string;
   readonly context?: OrchestrationMessageContext;
+  readonly replyTo?: ResponseContextRecord;
   readonly attachments: ReadonlyArray<DraftComposerAttachment>;
   readonly sourceShareId?: string;
 }
@@ -521,6 +543,7 @@ const PersistedComposerContextSchema = Schema.Struct({
 const ComposerDraftSchema = Schema.Struct({
   text: Schema.String,
   context: Schema.optional(PersistedComposerContextSchema),
+  replyTo: Schema.optional(ResponseContextRecord),
   attachments: Schema.Array(DraftComposerAttachmentSchema),
   importedShareIds: Schema.optional(Schema.Array(Schema.String)),
   modelSelection: Schema.optional(ModelSelectionSchema),
@@ -702,6 +725,7 @@ export function isComposerDraftEmpty(draft: ComposerDraft): boolean {
 function isEmptyDraft(draft: ComposerDraft): boolean {
   return (
     draft.text.length === 0 &&
+    draft.replyTo === undefined &&
     draft.attachments.length === 0 &&
     draft.modelSelection === undefined &&
     draft.runtimeMode === undefined &&
@@ -770,6 +794,7 @@ export function decodePersistedComposerState(value: unknown): {
             isNewTaskDraftKey(key) &&
               draft.modelSelection &&
               draft.text.length === 0 &&
+              draft.replyTo === undefined &&
               draft.attachments.length === 0 &&
               draft.runtimeMode === undefined &&
               draft.interactionMode === undefined &&
@@ -1336,29 +1361,27 @@ export async function restoreCloudComposerDrafts(accountId: string): Promise<voi
       for (const [key, draft] of Object.entries(saved.drafts)) {
         const existing = current[key];
         const attachmentIds = new Set(existing?.attachments.map((attachment) => attachment.id));
-        restored[key] = existing
-          ? {
-              ...draft,
-              ...existing,
-              text: mergeComposerDraftText(existing.text, draft.text),
-              context: mergeReferencedComposerContext(
-                mergeComposerDraftText(existing.text, draft.text),
-                draft.context,
-                existing.context,
-              ),
-              // A concurrent import must not lose files, even above the send limit.
-              attachments: [
-                ...existing.attachments,
-                ...draft.attachments.filter((attachment) => !attachmentIds.has(attachment.id)),
-              ],
-              importedShareIds: [
-                ...new Set([
-                  ...(existing.importedShareIds ?? []),
-                  ...(draft.importedShareIds ?? []),
-                ]),
-              ],
-            }
-          : draft;
+        if (existing) {
+          const incoming = mergeIncomingReply(existing.replyTo, draft);
+          const text = mergeComposerDraftText(existing.text, incoming.text);
+          restored[key] = {
+            ...draft,
+            ...existing,
+            text,
+            context: mergeReferencedComposerContext(text, incoming.context, existing.context),
+            ...(incoming.replyTo ? { replyTo: incoming.replyTo } : {}),
+            // A concurrent import must not lose files, even above the send limit.
+            attachments: [
+              ...existing.attachments,
+              ...draft.attachments.filter((attachment) => !attachmentIds.has(attachment.id)),
+            ],
+            importedShareIds: [
+              ...new Set([...(existing.importedShareIds ?? []), ...(draft.importedShareIds ?? [])]),
+            ],
+          };
+        } else {
+          restored[key] = draft;
+        }
       }
       return restored;
     });
@@ -1723,6 +1746,7 @@ export function clearComposerDraftContentState(
   const {
     importedShareIds: _importedShareIds,
     context: _context,
+    replyTo: _replyTo,
     modelSelection,
     workspaceSelection,
     project: _project,
@@ -1793,6 +1817,31 @@ function mergeReferencedComposerContext(
   return referencedComposerContext(text, { version: 1, records: [...records.values()] });
 }
 
+/**
+ * When a merge carries a reply to a different response than the one already in the bar,
+ * preserve the incoming reply inline on the merged text and context instead of dropping it.
+ */
+function mergeIncomingReply(
+  existingReplyTo: ResponseContextRecord | undefined,
+  incoming: {
+    readonly text: string;
+    readonly context?: OrchestrationMessageContext;
+    readonly replyTo?: ResponseContextRecord;
+  },
+) {
+  const conflict =
+    existingReplyTo !== undefined &&
+    incoming.replyTo !== undefined &&
+    existingReplyTo.contextId !== incoming.replyTo.contextId;
+  const merged = conflict
+    ? withReplyMessage(incoming.text, incoming.context, incoming.replyTo)
+    : { text: incoming.text, context: incoming.context };
+  return {
+    ...merged,
+    replyTo: existingReplyTo ?? incoming.replyTo,
+  };
+}
+
 export function mergeComposerDraftContentState(
   current: Record<string, ComposerDraft>,
   draftKey: string,
@@ -1814,15 +1863,18 @@ export function mergeComposerDraftContentState(
     0,
     PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   );
-  const text = mergeComposerDraftText(existing.text, content.text);
-  const context = mergeReferencedComposerContext(text, existing.context, content.context);
+  const incoming = mergeIncomingReply(existing.replyTo, content);
+  const text = mergeComposerDraftText(existing.text, incoming.text);
+  const context = mergeReferencedComposerContext(text, existing.context, incoming.context);
+  const replyTo = incoming.replyTo;
   const importedShareIds = content.sourceShareId
     ? [...(existing.importedShareIds ?? []), content.sourceShareId]
     : existing.importedShareIds;
   if (
     text === existing.text &&
     attachments.length === existing.attachments.length &&
-    content.context === undefined &&
+    incoming.context === undefined &&
+    replyTo === existing.replyTo &&
     importedShareIds === existing.importedShareIds
   ) {
     return current;
@@ -1839,6 +1891,7 @@ export function mergeComposerDraftContentState(
         text,
         attachments,
         context,
+        ...(replyTo ? { replyTo } : {}),
         ...(importedShareIds ? { importedShareIds } : {}),
       },
       content.sourceShareId ? attachments.slice(existing.attachments.length) : [],
@@ -1886,6 +1939,7 @@ export function sameComposerDraftState(a: ComposerDraft, b: ComposerDraft): bool
     a.text === b.text &&
     a.attachments === b.attachments &&
     a.context === b.context &&
+    a.replyTo === b.replyTo &&
     a.importedShareIds === b.importedShareIds &&
     a.modelSelection === b.modelSelection &&
     a.runtimeMode === b.runtimeMode &&
@@ -1917,6 +1971,7 @@ export function undoComposerDraftMergeState(
   );
   const undoSetting = <
     K extends
+      | "replyTo"
       | "modelSelection"
       | "runtimeMode"
       | "interactionMode"
@@ -1931,10 +1986,13 @@ export function undoComposerDraftMergeState(
       : insertedText.length > 0 && existing.text.endsWith(insertedText)
         ? existing.text.slice(0, existing.text.length - insertedText.length)
         : existing.text;
+  const { replyTo: _existingReplyTo, ...existingRest } = existing;
+  const nextReplyTo = undoSetting("replyTo");
   const draft = {
-    ...existing,
+    ...existingRest,
     text,
     context: referencedComposerContext(text, existing.context),
+    ...(nextReplyTo !== undefined ? { replyTo: nextReplyTo } : {}),
     attachments: existing.attachments.filter(
       (attachment) => !insertedAttachmentIds.has(attachment.id),
     ),
@@ -2227,6 +2285,24 @@ export function useComposerDraftSettings(draftKey: string | null): ComposerDraft
     ensureComposerDraftsLoaded();
   }, []);
   return settings;
+}
+
+const composerDraftReplyToAtom = Atom.family((draftKey: string) =>
+  Atom.make(
+    (get): ResponseContextRecord | null => get(composerDraftAtom(draftKey)).replyTo ?? null,
+  ),
+);
+const EMPTY_DRAFT_REPLY_TO_ATOM = Atom.make<ResponseContextRecord | null>(null);
+
+export function useComposerDraftReplyTo(draftKey: string | null): ResponseContextRecord | null {
+  const replyTo = useAtomValue(
+    draftKey ? composerDraftReplyToAtom(draftKey) : EMPTY_DRAFT_REPLY_TO_ATOM,
+  );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- starts loading persisted composer drafts from native storage on first use
+  useEffect(() => {
+    ensureComposerDraftsLoaded();
+  }, []);
+  return replyTo;
 }
 
 export function useComposerDraft(draftKey: string | null): ComposerDraft {

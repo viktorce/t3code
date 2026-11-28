@@ -1,15 +1,27 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  EnvironmentId,
+  MessageId,
   NodeId,
   ProviderDriverKind,
   ProviderInstanceId,
   RunId,
   ThreadId,
+  TurnItemId,
+  type OrchestrationV2ConversationMessage,
+  type OrchestrationV2NotificationSource,
+  type OrchestrationV2RemoteTaskChild,
   type OrchestrationV2Subagent,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
-import { deriveThreadTurnSubagents, resolveSubagentPillSegment } from "./threadSubagents.ts";
+import type { ThreadStructureTurnItem } from "./models.ts";
+import { v2MessageRow } from "./orchestrationV2TestFixtures.ts";
+import {
+  deriveResponseSubagents,
+  deriveThreadTurnSubagents,
+  resolveSubagentPillSegment,
+} from "./threadSubagents.ts";
 
 const at = (iso: string) => DateTime.makeUnsafe(iso);
 
@@ -340,5 +352,117 @@ describe("deriveThreadTurnSubagents", () => {
       label: "1 done",
       accessibilityLabel: "1 agent done",
     });
+  });
+});
+
+describe("deriveResponseSubagents", () => {
+  const row = (id: string, fields: object) => {
+    const base = v2MessageRow(id, 0);
+    return { ...base, item: { ...base.item, ...fields } as ThreadStructureTurnItem };
+  };
+  const notice = (
+    id: string,
+    source: Partial<Extract<OrchestrationV2NotificationSource, { kind: "delegated_task" }>>,
+  ) =>
+    row(id, {
+      type: "notification",
+      source: {
+        kind: "delegated_task",
+        taskIds: [],
+        ...source,
+      } satisfies OrchestrationV2NotificationSource,
+    });
+  // Older history loads no `subagents`, so its tasks are known only from these items.
+  const taskItem = (
+    id: string,
+    childThreadId: ThreadId | null,
+    remoteChild?: OrchestrationV2RemoteTaskChild,
+  ) =>
+    row(id, {
+      type: "subagent",
+      subagentId: NodeId.make(id),
+      childThreadId,
+      ...(remoteChild ? { remoteChild } : {}),
+    } satisfies Pick<
+      Extract<ThreadStructureTurnItem, { type: "subagent" }>,
+      "type" | "subagentId" | "childThreadId" | "remoteChild"
+    >);
+
+  it("collects the children named by the inputs just before the response", () => {
+    const titles: Record<string, string> = {
+      "env:child-local": "Stale title",
+      "env:child-unloaded": "Read title",
+      "linked:remote-child": "Remote read title",
+      "env:item-child": "Item read title",
+    };
+    const found = deriveResponseSubagents(
+      {
+        visibleTurnItems: [
+          taskItem("item-local", ThreadId.make("item-child")),
+          taskItem("item-remote", null, {
+            environmentId: EnvironmentId.make("linked"),
+            threadId: ThreadId.make("item-remote-child"),
+            label: "linked",
+            title: "Item remote title",
+          }),
+          notice("older", { childThreadId: ThreadId.make("old-child") }),
+          row("earlier", { type: "assistant_message" }),
+          notice("notice", {
+            taskIds: [
+              NodeId.make("task-local"),
+              NodeId.make("item-local"),
+              NodeId.make("item-remote"),
+            ],
+            childThreadId: ThreadId.make("child-unloaded"),
+          }),
+          row("delivery", { senderThreadId: ThreadId.make("child-blank") }),
+          row("response", { type: "assistant_message" }),
+        ],
+        subagents: [
+          subagent({ id: "old", childThreadId: ThreadId.make("old-child"), title: "Old" }),
+          subagent({
+            id: "task-local",
+            childThreadId: ThreadId.make("child-local"),
+            title: "Reviewer",
+          }),
+          subagent({
+            id: "task-remote",
+            childThreadId: null,
+            title: null,
+            remoteChild: {
+              environmentId: EnvironmentId.make("linked"),
+              threadId: ThreadId.make("remote-child"),
+              label: "linked",
+            },
+          }),
+          subagent({ id: "task-blank", childThreadId: ThreadId.make("child-blank"), title: "  " }),
+        ],
+        messages: [
+          {
+            id: MessageId.make("delivery"),
+            delegatedCompletion: {
+              parentRunId: RunId.make("run-1"),
+              generation: 1,
+              taskIds: [NodeId.make("task-remote")],
+            },
+          } satisfies Pick<
+            OrchestrationV2ConversationMessage,
+            "id" | "delegatedCompletion"
+          > as never,
+        ],
+      },
+      EnvironmentId.make("env"),
+      TurnItemId.make("response"),
+      (ref) => titles[`${ref.environmentId}:${ref.threadId}`],
+    );
+
+    expect(found).toEqual([
+      { threadId: "remote-child", environmentId: "linked", title: "Remote read title" },
+      { threadId: "child-blank", title: "Agent" },
+      { threadId: "child-unloaded", title: "Read title" },
+      { threadId: "child-local", title: "Reviewer" },
+      { threadId: "item-child", title: "Item read title" },
+      { threadId: "item-remote-child", environmentId: "linked", title: "Item remote title" },
+    ]);
   });
 });

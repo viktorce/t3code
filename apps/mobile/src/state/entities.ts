@@ -1,5 +1,9 @@
 import { useAtomValue } from "@effect/atom-react";
 import { deriveReportedModelSelection } from "@t3tools/client-runtime/state/thread-execution";
+import {
+  deriveResponseSubagents,
+  type ResponseSubagent,
+} from "@t3tools/client-runtime/state/thread-subagents";
 
 import { appAtomRegistry } from "./atom-registry";
 import type {
@@ -15,6 +19,7 @@ import {
   type ScopedProjectRef,
   type ScopedThreadRef,
   type ServerConfig,
+  type TurnItemId,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
@@ -334,5 +339,23 @@ export function useThreadReportedModelSelection(ref: ScopedThreadRef | null) {
   return useAtomValue(
     ref === null ? EMPTY_THREAD_ATOM : environmentThreadDetails.threadAtom(ref),
     selectReportedModelSelection,
+  );
+}
+
+/**
+ * The subagents a response reported on, read once on demand so a feed row does not subscribe to
+ * the thread for it.
+ */
+export function readResponseSubagents(
+  ref: ScopedThreadRef,
+  itemId: TurnItemId,
+): ReadonlyArray<ResponseSubagent> {
+  const projection = appAtomRegistry.get(environmentThreadDetails.quietThreadAtom(ref))?.projection;
+  return deriveResponseSubagents(
+    projection,
+    ref.environmentId,
+    itemId,
+    (childRef) =>
+      appAtomRegistry.get(environmentThreadShells.quietThreadShellAtom(childRef))?.title,
   );
 }

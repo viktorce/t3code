@@ -25,6 +25,7 @@ import {
   ProviderInstanceId,
   RuntimeRequestId,
   ThreadId,
+  TurnItemId,
   type OrchestrationV2ThreadShell,
   type OrchestrationV2ShellSnapshot,
   type ModelSelection,
@@ -183,6 +184,7 @@ import type { DraftComposerAttachment } from "../lib/composerImages";
 import {
   collectComposerContextReferences,
   formatComposerContextReference,
+  responseContextRecord,
 } from "@t3tools/shared/composerContextReferences";
 import { appAtomRegistry } from "./atom-registry";
 import { startComposerDraftOperation } from "./composerDraftOperations";
@@ -208,6 +210,7 @@ import {
   createNewTaskDraft,
   createComposerDraftContextHistory,
   setComposerDraftContext,
+  setComposerDraftReplyTo,
   decodePersistedComposerState,
   ensureComposerDraftsLoaded,
   type ComposerDraft,
@@ -2929,5 +2932,136 @@ describe("mobile composer drafts", () => {
       },
     });
     expect(composerAttachmentCleanupMocks.remove).not.toHaveBeenCalled();
+  });
+
+  const makeReply = (draftKey: string, messageId: string, text: string) => {
+    const [environmentId, threadId] = draftKey.split(":");
+    return responseContextRecord({
+      citation: {
+        version: 1,
+        environmentId: EnvironmentId.make(environmentId!),
+        threadId: ThreadId.make(threadId!),
+        messageId: MessageId.make(messageId),
+        text,
+        start: 0,
+        end: text.length,
+        prefix: "",
+        suffix: "",
+      },
+      itemId: TurnItemId.make(`item-${messageId}`),
+      subagents: [],
+    });
+  };
+
+  it("persists, replaces, and clears pending replyTo state", () => {
+    const draftKey = "reply-environment:reply-thread";
+    const first = makeReply(draftKey, "assistant-1", "First answer");
+    const second = makeReply(draftKey, "assistant-2", "Second answer");
+
+    setComposerDraftReplyTo(draftKey, first);
+    const saved = getComposerDraftSnapshot(draftKey);
+    expect(saved.replyTo).toEqual(first);
+
+    const decoded = decodePersistedComposerState(
+      JSON.parse(JSON.stringify({ schemaVersion: 1, drafts: { [draftKey]: saved } })),
+    ).drafts[draftKey];
+    expect(decoded?.replyTo).toEqual(first);
+
+    setComposerDraftReplyTo(draftKey, second);
+    expect(getComposerDraftSnapshot(draftKey).replyTo).toEqual(second);
+
+    const cleared = clearComposerDraftContentState(
+      { [draftKey]: getComposerDraftSnapshot(draftKey) },
+      draftKey,
+    );
+    expect(cleared[draftKey]).toBeUndefined();
+
+    setComposerDraftReplyTo(draftKey, null);
+    expect(getComposerDraftSnapshot(draftKey).replyTo).toBeUndefined();
+  });
+
+  it("preserves a conflicting incoming reply inline on merge and rolls it back on undo", () => {
+    const draftKey = "reply-environment:reply-merge-thread";
+    const first = makeReply(draftKey, "assistant-1", "First answer");
+    const second = makeReply(draftKey, "assistant-2", "Second answer");
+
+    const snapshot: ComposerDraft = { text: "", attachments: [] };
+    const merged = mergeComposerDraftContentState({ [draftKey]: snapshot }, draftKey, {
+      text: "Follow up",
+      attachments: [],
+      replyTo: first,
+    });
+    expect(merged[draftKey]?.replyTo).toEqual(first);
+
+    const conflictMerged = mergeComposerDraftContentState(merged, draftKey, {
+      text: "More",
+      attachments: [],
+      replyTo: second,
+    });
+    expect(conflictMerged[draftKey]?.replyTo).toEqual(first);
+    expect(conflictMerged[draftKey]?.text).toBe(
+      `Follow up\n\n[Second answer](t3-context://v1/response/${second.contextId}) More`,
+    );
+    expect(conflictMerged[draftKey]?.context?.records).toEqual([second]);
+
+    const conflictUndone = undoComposerDraftMergeState(
+      {
+        [draftKey]: {
+          ...conflictMerged[draftKey]!,
+          text: `${conflictMerged[draftKey]!.text} tail`,
+        },
+      },
+      draftKey,
+      merged[draftKey]!,
+      conflictMerged[draftKey]!,
+    );
+    expect(conflictUndone[draftKey]?.text).toBe("Follow up tail");
+    expect(conflictUndone[draftKey]?.replyTo).toEqual(first);
+    expect(conflictUndone[draftKey]?.context).toBeUndefined();
+
+    const undone = undoComposerDraftMergeState(
+      { [draftKey]: { ...merged[draftKey]!, text: `${merged[draftKey]!.text} extra` } },
+      draftKey,
+      snapshot,
+      merged[draftKey]!,
+    );
+    expect(undone[draftKey]?.text).toBe(" extra");
+    expect(undone[draftKey]?.replyTo).toBeUndefined();
+  });
+
+  it("restores a signed-out draft's reply, keeping a different live reply in the bar", async () => {
+    const load = vi.spyOn(threadOutboxManager, "load").mockResolvedValue(true);
+    onTestFinished(() => load.mockRestore());
+    await waitForComposerDraftsLoaded();
+    const plainKey = "reply-environment:cloud-plain";
+    const repliedKey = "reply-environment:cloud-replied";
+    const saved = makeReply(plainKey, "assistant-1", "Saved answer");
+    const live = makeReply(repliedKey, "assistant-2", "Live answer");
+    const incoming = makeReply(repliedKey, "assistant-3", "Incoming answer");
+    appAtomRegistry.set(composerDraftsAtom, {
+      [plainKey]: { text: "Live", attachments: [] },
+      [repliedKey]: { text: "Live", attachments: [], replyTo: live },
+    });
+    appAtomRegistry.set(composerCloudDraftsAtom, {
+      accountId: null,
+      signedOut: {
+        account: {
+          drafts: {
+            [plainKey]: { text: "Saved", attachments: [], replyTo: saved },
+            [repliedKey]: { text: "Saved", attachments: [], replyTo: incoming },
+          },
+          queuedMessages: [],
+        },
+      },
+    });
+    await restoreCloudComposerDrafts("account");
+
+    expect(getComposerDraftSnapshot(plainKey).replyTo).toEqual(saved);
+    const replied = getComposerDraftSnapshot(repliedKey);
+    expect(replied.replyTo).toEqual(live);
+    expect(replied.text).toBe(
+      `Live\n\n[Incoming answer](t3-context://v1/response/${incoming.contextId}) Saved`,
+    );
+    expect(replied.context?.records).toEqual([incoming]);
   });
 });

@@ -1,5 +1,9 @@
+import { extractFenceTitle } from "@t3tools/shared/markdownCodeFence";
 import { markdownMathRanges } from "@t3tools/shared/markdownMath";
-import { createAssistantTextSelector } from "@t3tools/shared/assistantCitations";
+import {
+  captureAssistantTextOpening,
+  createAssistantTextSelector,
+} from "@t3tools/shared/assistantCitations";
 import {
   splitCodexArtifactTemplateMarkdown,
   renderCodexInlineDirectivesAsMarkdown,
@@ -12,7 +16,11 @@ import {
   type MarkdownNode,
 } from "./markdownDocument";
 
-function renderedText(node: MarkdownNode, restoreMath: (value: string) => string): string {
+function renderedText(
+  node: MarkdownNode,
+  restoreMath: (value: string) => string,
+  includeFenceTitle: boolean,
+): string {
   if (
     node.type === "definition" ||
     node.type === "image" ||
@@ -21,6 +29,11 @@ function renderedText(node: MarkdownNode, restoreMath: (value: string) => string
     (node.type === "code" && node.lang === "mermaid")
   )
     return "";
+  if (node.type === "code") {
+    const code = restoreMath(node.value);
+    const title = includeFenceTitle ? extractFenceTitle(node.meta ?? undefined) : null;
+    return title ? (code ? `${title}\n${code}` : title) : code;
+  }
   if ("value" in node) return restoreMath(node.value);
   if ("children" in node) {
     const inline =
@@ -33,14 +46,14 @@ function renderedText(node: MarkdownNode, restoreMath: (value: string) => string
       node.type === "delete" ||
       node.type === "tableCell";
     return node.children
-      .map((child) => renderedText(child, restoreMath))
+      .map((child) => renderedText(child, restoreMath, includeFenceTitle))
       .filter((text) => text.length > 0)
       .join(inline ? "" : "\n");
   }
   return node.type === "break" ? "\n" : "";
 }
 
-function citationText(markdown: string): string {
+function citationText(markdown: string, includeFenceTitle: boolean): string {
   const formulas = markdownMathRanges(markdown);
   let marker = "\ue000t3math";
   while (markdown.includes(marker)) marker += "_";
@@ -52,23 +65,36 @@ function citationText(markdown: string): string {
     cursor = formula.end;
   }
   prose += markdown.slice(cursor);
-  return renderedText(parseMarkdownDocument(prose), (value) =>
-    value.replace(new RegExp(`${marker}(\\d+)\ue001`, "g"), (_, index: string) => {
-      const formula = formulas[Number(index)]!;
-      const tex = formula.tex.trim();
-      return formula.display ? `\\[\n${tex}\n\\]` : `\\(${tex}\\)`;
-    }),
+  return renderedText(
+    parseMarkdownDocument(prose),
+    (value) =>
+      value.replace(new RegExp(`${marker}(\\d+)\ue001`, "g"), (_, index: string) => {
+        const formula = formulas[Number(index)]!;
+        const tex = formula.tex.trim();
+        return formula.display ? `\\[\n${tex}\n\\]` : `\\(${tex}\\)`;
+      }),
+    includeFenceTitle,
   );
 }
 
 function citationSegments(
   markdown: string,
-  path = "",
-  definitions = markdownReferenceDefinitions(markdown),
+  options?: {
+    readonly path?: string;
+    readonly definitions?: ReadonlyArray<string>;
+    readonly includeFenceTitle?: boolean;
+  },
 ): Array<{ path: string; text: string }> {
+  const path = options?.path ?? "";
+  const definitions = options?.definitions ?? markdownReferenceDefinitions(markdown);
+  const includeFenceTitle = options?.includeFenceTitle ?? false;
   return splitMarkdownDetails(markdown).flatMap((block, index) => {
     if (block.kind === "details")
-      return citationSegments(block.body, `${path}${index}/`, definitions);
+      return citationSegments(block.body, {
+        path: `${path}${index}/`,
+        definitions,
+        includeFenceTitle,
+      });
     return splitCodexArtifactTemplateMarkdown(block.markdown).flatMap((segment, segmentIndex) =>
       segment.kind === "markdown"
         ? [
@@ -78,6 +104,7 @@ function citationSegments(
                 renderCodexInlineDirectivesAsMarkdown(
                   withReferenceDefinitions(segment.markdown, definitions),
                 ),
+                includeFenceTitle,
               ),
             },
           ]
@@ -117,4 +144,12 @@ export function collectMobileAssistantTextSelectors(markdown: string, path: stri
     const selector = createAssistantTextSelector(fullText, start, start + quote.length);
     return selector ? [{ selector: { ...selector, text }, index, count: matches.length }] : [];
   });
+}
+
+export function captureMobileAssistantMessageOpening(markdown: string) {
+  const rendered = citationSegments(markdown, { includeFenceTitle: true })
+    .map((segment) => segment.text)
+    .filter((text) => text.trim().length > 0)
+    .join("\n");
+  return captureAssistantTextOpening(rendered || markdown);
 }

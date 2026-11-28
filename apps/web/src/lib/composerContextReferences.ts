@@ -2,6 +2,7 @@ import type { ComposerContextId, ComposerContextKind } from "@t3tools/contracts"
 import {
   collectComposerContextReferences,
   formatComposerContextReference,
+  removeComposerContextReference,
   replaceComposerContextReferences,
 } from "@t3tools/shared/composerContextReferences";
 
@@ -81,24 +82,7 @@ export function removeInlineContextReference(
   prompt: string,
   contextId: string,
 ): { prompt: string; cursor: number } {
-  const occurrences = collectComposerContextReferences(prompt).filter(
-    (candidate) => candidate.contextId === contextId,
-  );
-  if (occurrences.length === 0) return { prompt, cursor: prompt.length };
-  let result = prompt;
-  let cursor = prompt.length;
-  for (const occurrence of occurrences.reverse()) {
-    let { start, end } = occurrence;
-    if (result[end] === " ") end += 1;
-    else if (result[start - 1] === " ") start -= 1;
-    result = `${result.slice(0, start)}${result.slice(end)}`;
-    cursor = start;
-  }
-  if (cursor >= result.length) {
-    result = result.trimEnd();
-    cursor = result.length;
-  }
-  return { prompt: result, cursor };
+  return removeComposerContextReference(prompt, contextId);
 }
 
 export function ensureInlineContextReferences(

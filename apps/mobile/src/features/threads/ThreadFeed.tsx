@@ -7,10 +7,17 @@ import { formatDuration } from "@t3tools/shared/orchestrationTimingCopy";
 import { Sheet } from "../../components/ui/Sheet";
 import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListSection } from "../../components/ui/ListSection";
-import { collectMobileAssistantTextSelectors } from "../../lib/assistantCitationSelection";
+import {
+  captureMobileAssistantMessageOpening,
+  collectMobileAssistantTextSelectors,
+} from "../../lib/assistantCitationSelection";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
-import { ASSISTANT_CITATION_MAX_TEXT_LENGTH, type AssistantCitation } from "@t3tools/contracts";
+import {
+  ASSISTANT_CITATION_MAX_TEXT_LENGTH,
+  type AssistantCitation,
+  type ResponseContextRecord,
+} from "@t3tools/contracts";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { useWorkspaceSettledContentWidth } from "../layout/workspace-content-width";
 import { useVisibleSecondClock } from "./use-visible-second-clock";
@@ -95,6 +102,7 @@ import {
   parseComposerContextHref,
   collectComposerContextReferences,
   replaceComposerContextReferences,
+  responseContextRecord,
   formatComposerContextReference,
 } from "@t3tools/shared/composerContextReferences";
 import { ComposerContextSheet } from "../../components/ComposerContextSheet";
@@ -295,6 +303,7 @@ import {
   workspaceLinkLookupQuery,
 } from "@t3tools/client-runtime/workspace-basename-lookup";
 import {
+  readResponseSubagents,
   resolveThreadLink,
   useEnvironmentPreviewTunnelOff,
   useLiveThreadLinkLabels,
@@ -423,6 +432,7 @@ export interface ThreadFeedProps {
   readonly skills?: ReadonlyArray<SelectableMarkdownSkill>;
   readonly onUseArtifactTemplate?: (template: CodexArtifactTemplate) => void;
   readonly onCiteAssistantText?: (citation: AssistantCitation) => void;
+  readonly onReplyToResponse?: (response: ResponseContextRecord) => void;
 }
 
 const USER_MESSAGE_COPY_MENU_ACTIONS = [
@@ -1351,6 +1361,7 @@ const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
   readonly environmentId: EnvironmentId;
   readonly citationSource?: Pick<AssistantCitation, "threadId" | "messageId">;
   readonly onCiteAssistantText?: (citation: AssistantCitation) => void;
+  readonly onReplyToResponse?: (response: ResponseContextRecord) => void;
   readonly markdownStyles: MarkdownStyleSet;
   readonly linkHandlers: MarkdownLinkHandlers;
   readonly reply?: MarkdownLinkReply | undefined;
@@ -1383,6 +1394,35 @@ const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
       ...selector,
     });
   };
+  // Built from primitives so it stays the same across row renders; code blocks read it through
+  // context, and a new handler would re-render every block the markdown view kept.
+  const onReplyToResponse = props.onReplyToResponse;
+  const replyThreadId = props.citationSource?.threadId;
+  const replyMessageId = props.citationSource?.messageId;
+  const replyItemId = props.reply?.sourceItemId;
+  const onReply =
+    onReplyToResponse && replyThreadId && replyMessageId && replyItemId
+      ? () => {
+          const opening = captureMobileAssistantMessageOpening(liveMarkdown);
+          if (!opening) return;
+          onReplyToResponse(
+            responseContextRecord({
+              citation: {
+                version: 1,
+                environmentId: props.environmentId,
+                threadId: replyThreadId,
+                messageId: replyMessageId,
+                ...opening,
+              },
+              itemId: replyItemId,
+              subagents: readResponseSubagents(
+                scopeThreadRef(props.environmentId, replyThreadId),
+                replyItemId,
+              ),
+            }),
+          );
+        }
+      : undefined;
   const models = useModelMentions(props.environmentId, props.markdown);
   const threadIcons = useThreadChipIcons(props.environmentId, liveMarkdown);
   const withGallery = useFilePreviewGallery();
@@ -1427,6 +1467,7 @@ const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
               }
             : undefined
         }
+        onReply={onReply}
         markdownStyles={props.markdownStyles}
         linkHandlers={linkHandlers}
         onUseArtifactTemplate={props.onUseArtifactTemplate}
@@ -1467,6 +1508,7 @@ function AssistantMarkdownBlocks(props: {
   readonly markdown: string;
   readonly citationPath?: string;
   readonly onCiteText?: (text: string, path: string) => void;
+  readonly onReply?: () => void;
   /** The reply's reference definitions, passed down by the enclosing fold. */
   readonly definitions?: ReadonlyArray<string> | undefined;
   readonly markdownStyles: MarkdownStyleSet;
@@ -1538,6 +1580,7 @@ function AssistantMarkdownBlocks(props: {
                   )
               : undefined
           }
+          onReply={props.onReply}
           {...props.linkHandlers}
           renderImage={props.renderImage}
         />
@@ -2009,6 +2052,7 @@ function renderFeedEntry(
     | "environmentId"
     | "onUseArtifactTemplate"
     | "onCiteAssistantText"
+    | "onReplyToResponse"
     | "skills"
     | "dispatchingMessageId"
     | "onEditPendingMessage"
@@ -2727,6 +2771,9 @@ function renderFeedEntry(
               environmentId={props.environmentId}
               citationSource={{ threadId: props.threadId, messageId: message.id }}
               onCiteAssistantText={props.onCiteAssistantText}
+              onReplyToResponse={
+                props.onReplyToResponse && !message.streaming ? props.onReplyToResponse : undefined
+              }
               markdownStyles={styles}
               linkHandlers={props.markdownLinkHandlers}
               reply={message.projectedItem}
@@ -3809,6 +3856,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     disclosureLayout,
     reduceMotion,
     onCiteAssistantText: props.onCiteAssistantText,
+    onReplyToResponse: props.onReplyToResponse,
     formatMessageTime,
     worktreeSetup: props.worktreeSetup,
     preparingWorktree: props.preparingWorktree,
@@ -4295,6 +4343,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             onEditPendingMessage: props.onEditPendingMessage,
             onUseArtifactTemplate: props.onUseArtifactTemplate,
             onCiteAssistantText: props.onCiteAssistantText,
+            onReplyToResponse: props.onReplyToResponse,
             threadId: props.threadId,
             copiedRowId,
             expandedWorkRows,

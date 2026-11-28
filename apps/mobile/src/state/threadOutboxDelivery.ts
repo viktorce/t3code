@@ -39,7 +39,11 @@ import { createDebugLogger } from "../lib/debugLog";
 import type { DraftComposerAttachment } from "../lib/composerImages";
 import { scopedThreadKey } from "../lib/scopedEntities";
 import { buildProjectThreadStartTurnInput } from "../lib/projectThreadStartTurn";
-import { serializeComposerMessageForServer, uploadedComposerContext } from "../lib/composerContext";
+import {
+  extractReplyFromMessage,
+  serializeComposerMessageForServer,
+  uploadedComposerContext,
+} from "../lib/composerContext";
 import { prepareTurnAttachments } from "../lib/attachmentUpload";
 import { randomHex } from "../lib/uuid";
 import {
@@ -519,10 +523,12 @@ export const restoreRejectedQueuedMessage = Effect.fn("ThreadOutbox.restoreRejec
       }
       stampRecoveryDraftProject(queuedMessage, draftKey);
       // The merge publishes even when persisting it fails, so the rollback is captured either way.
+      const extracted = extractReplyFromMessage(queuedMessage.text, queuedMessage.context);
       yield* storage("restore-to-draft", queuedMessage.messageId, () =>
         mergeComposerDraftContent(draftKey, {
-          text: queuedMessage.text,
-          context: queuedMessage.context,
+          text: extracted.text,
+          context: extracted.context,
+          ...(extracted.replyTo ? { replyTo: extracted.replyTo } : {}),
           attachments: queuedMessage.attachments,
         }),
       ).pipe(

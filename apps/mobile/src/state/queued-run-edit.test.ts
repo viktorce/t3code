@@ -2,16 +2,19 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { Atom } from "effect/reactivity";
 import {
   ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
+  responseContextRecord,
   restoreAttachmentOnlyBootstrapPrompt,
 } from "@t3tools/shared/composerContextReferences";
+import { withReplyMessage } from "../lib/composerContext";
 import {
   ChatAttachmentId,
   ComposerContextId,
-  MessageId,
   EnvironmentId,
-  ThreadId,
+  MessageId,
   ProviderInstanceId,
   RunId,
+  ThreadId,
+  TurnItemId,
   type ChatAttachment,
   type OrchestrationMessageContext,
 } from "@t3tools/contracts";
@@ -33,6 +36,7 @@ import { threadComposerErrorsAtom } from "./thread-composer-error";
 import {
   flushComposerDrafts,
   getComposerDraftSnapshot,
+  setComposerDraftReplyTo,
   setComposerDraftText,
   waitForComposerDraftsLoaded,
 } from "./use-composer-drafts";
@@ -125,6 +129,20 @@ describe("resolveQueuedEditPayload", () => {
 
     expect(payload.attachments.map((attachment) => attachment.id)).toEqual(["kept"]);
     expect(payload.context?.records).toEqual([expect.objectContaining({ attachmentId: "kept" })]);
+  });
+
+  it.each([
+    ["every chip was deleted", undefined],
+    ["every record's attachment was removed", context(["gone"])],
+  ])("sends an empty context when %s, so the stored records go", (_, draftContext) => {
+    const payload = resolveQueuedEditPayload({
+      edit: edit([]),
+      draftContext,
+      draftAttachments: [],
+      uploaded: [],
+    });
+
+    expect(payload.context).toEqual({ version: 1, records: [] });
   });
 });
 
@@ -263,6 +281,68 @@ describe("beginQueuedRunEdit", () => {
     expect(getQueuedRunEdit(threadKey)).toBeNull();
     expect(appAtomRegistry.get(threadComposerErrorsAtom)[threadKey]?.message).toBe(
       "That message already started, so the edit was discarded.",
+    );
+  });
+
+  it("extracts a reply into the edit banner and recovers a changed reply when its run starts", async () => {
+    await waitForComposerDraftsLoaded();
+    const reply = responseContextRecord({
+      citation: {
+        version: 1,
+        environmentId: EnvironmentId.make("env-exit"),
+        threadId: ThreadId.make("thread-reply"),
+        messageId: MessageId.make("assistant-1"),
+        text: "Done.",
+        start: 0,
+        end: 5,
+        prefix: "",
+        suffix: "",
+      },
+      itemId: TurnItemId.make("item-1"),
+      subagents: [],
+    });
+    const threadKey = "env-exit:thread-reply";
+    const runId = RunId.make("run-1");
+    const runs = Atom.make<ReadonlyArray<{ readonly id: RunId; readonly status: string }> | null>([
+      { id: runId, status: "queued" },
+    ]);
+    const sent = withReplyMessage("Follow up", undefined, reply);
+    beginQueuedRunEdit(
+      threadKey,
+      {
+        ...edit([]),
+        originalText: sent.text,
+        context: sent.context,
+      },
+      runs,
+    );
+
+    const editKey = queuedEditDraftKey(threadKey, runId);
+    expect(getComposerDraftSnapshot(editKey)).toMatchObject({
+      text: "Follow up",
+      replyTo: reply,
+    });
+
+    // Untouched reply exits cleanly.
+    appAtomRegistry.set(runs, [{ id: runId, status: "running" }]);
+    expect(getComposerDraftSnapshot(threadKey).replyTo).toBeUndefined();
+    expect(appAtomRegistry.get(threadComposerErrorsAtom)[threadKey]?.message).toBeUndefined();
+
+    // Adding a reply to a queued edit counts as a change and recovers into an empty thread draft.
+    const runs2 = Atom.make<ReadonlyArray<{ readonly id: RunId; readonly status: string }> | null>([
+      { id: runId, status: "queued" },
+    ]);
+    beginQueuedRunEdit(threadKey, edit([]), runs2);
+    setComposerDraftReplyTo(editKey, reply);
+    appAtomRegistry.set(runs2, [{ id: runId, status: "running" }]);
+    await flushComposerDrafts();
+
+    expect(getComposerDraftSnapshot(threadKey)).toMatchObject({
+      text: "original",
+      replyTo: reply,
+    });
+    expect(appAtomRegistry.get(threadComposerErrorsAtom)[threadKey]?.message).toBe(
+      "That message already started. Your edit is back in the composer.",
     );
   });
 });

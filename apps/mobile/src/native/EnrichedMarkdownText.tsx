@@ -25,7 +25,7 @@ import {
   type TextSelectionMenuConfig,
 } from "react-native-enriched-markdown";
 import { codeFenceRenderer } from "./codeBlockMarkdown";
-import { HighlightedCodeBlock } from "./HighlightedCodeBlock";
+import { CodeBlockReplyContext, HighlightedCodeBlock } from "./HighlightedCodeBlock";
 import { MermaidCodeBlock } from "./MermaidCodeBlock";
 import type { SelectableMarkdownTextProps } from "./SelectableMarkdownText.types";
 
@@ -460,55 +460,69 @@ export function MobileEnrichedMarkdownText(props: SelectableMarkdownTextProps) {
           marginBottom: props.marginBottom,
         }}
       >
-        <EnrichedMarkdownText
-          markdown={markdown}
-          markdownStyle={markdownStyle}
-          writingDirection={props.writingDirection}
-          onLinksChange={onLinksChange}
-          renderers={renderers}
-          resolveImageSource={resolveNativeImageSource}
-          onImagePress={
-            props.onImagePress || props.onLinkPress
-              ? ({ url }) => (props.onImagePress ?? props.onLinkPress)?.(url)
-              : undefined
-          }
-          linkRecognition={linkRecognition}
-          containerStyle={{ flexShrink: 1, minWidth: 0 }}
-          flavor="github"
-          selectable
-          contextMenuItems={
-            props.onCiteText
-              ? [
-                  {
-                    text: gt("Cite", { $context: "verb, quote selected text" }),
-                    icon: "quote.bubble",
-                    onPress: ({ text }) => props.onCiteText?.(text),
-                  },
-                ]
-              : undefined
-          }
-          selectionClipboard={selectionClipboard}
-          selectionMenuConfig={selectionMenuConfig}
-          selectionColor={props.textStyle.selectionColor}
-          selectionHandleColor={props.textStyle.selectionHandleColor}
-          md4cFlags={{
-            latexMath: mathRenderingEnabled,
-            hardSoftBreaks: props.preserveSoftBreaks ?? false,
-            admonitions: true,
-            preserveWindowsPaths: true,
-          }}
-          enableTaskListItemToggle={props.onTaskListItemPress !== undefined}
-          onTaskListItemPress={props.onTaskListItemPress}
-          enableCodeBlockWrapToggle
-          spoilerOverlay="solid"
-          onLinkPress={
-            props.onLinkPress || props.onImagePress ? ({ url }) => onLinkPress(url) : undefined
-          }
-          onLinkLongPress={onLinkLongPress}
-          linkContextMenuItems={linkContextMenuItems}
-          linkPillContent={linkPillContent}
-          accessibilityLabels={accessibilityLabels}
-        />
+        <CodeBlockReplyContext value={props.onReply}>
+          <EnrichedMarkdownText
+            markdown={markdown}
+            markdownStyle={markdownStyle}
+            writingDirection={props.writingDirection}
+            onLinksChange={onLinksChange}
+            renderers={renderers}
+            resolveImageSource={resolveNativeImageSource}
+            onImagePress={
+              props.onImagePress || props.onLinkPress
+                ? ({ url }) => (props.onImagePress ?? props.onLinkPress)?.(url)
+                : undefined
+            }
+            linkRecognition={linkRecognition}
+            containerStyle={{ flexShrink: 1, minWidth: 0 }}
+            flavor="github"
+            selectable
+            contextMenuItems={(() => {
+              const items = [
+                ...(props.onCiteText
+                  ? [
+                      {
+                        text: gt("Cite", { $context: "verb, quote selected text" }),
+                        icon: "quote.bubble",
+                        onPress: ({ text }: { text: string }) => props.onCiteText?.(text),
+                      },
+                    ]
+                  : []),
+                ...(props.onReply
+                  ? [
+                      {
+                        text: gt("Reply", { $context: "verb, reply to an assistant response" }),
+                        icon: "arrowshape.turn.up.left",
+                        onPress: () => props.onReply?.(),
+                      },
+                    ]
+                  : []),
+              ];
+              return items.length > 0 ? items : undefined;
+            })()}
+            selectionClipboard={selectionClipboard}
+            selectionMenuConfig={selectionMenuConfig}
+            selectionColor={props.textStyle.selectionColor}
+            selectionHandleColor={props.textStyle.selectionHandleColor}
+            md4cFlags={{
+              latexMath: mathRenderingEnabled,
+              hardSoftBreaks: props.preserveSoftBreaks ?? false,
+              admonitions: true,
+              preserveWindowsPaths: true,
+            }}
+            enableTaskListItemToggle={props.onTaskListItemPress !== undefined}
+            onTaskListItemPress={props.onTaskListItemPress}
+            enableCodeBlockWrapToggle
+            spoilerOverlay="solid"
+            onLinkPress={
+              props.onLinkPress || props.onImagePress ? ({ url }) => onLinkPress(url) : undefined
+            }
+            onLinkLongPress={onLinkLongPress}
+            linkContextMenuItems={linkContextMenuItems}
+            linkPillContent={linkPillContent}
+            accessibilityLabels={accessibilityLabels}
+          />
+        </CodeBlockReplyContext>
       </View>
     );
   };

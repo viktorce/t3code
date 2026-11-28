@@ -694,6 +694,10 @@
     "./assistantInsights": {
       "types": "./src/assistantInsights.ts",
       "import": "./src/assistantInsights.ts"
+    },
+    "./markdownCodeFence": {
+      "types": "./src/markdownCodeFence.ts",
+      "import": "./src/markdownCodeFence.ts"
     }
   },
   "scripts": {
