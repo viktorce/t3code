@@ -131,10 +131,13 @@ describe("resolveQueuedEditPayload", () => {
     expect(payload.context?.records).toEqual([expect.objectContaining({ attachmentId: "kept" })]);
   });
 
-  it("sends an empty context when the edit removed every record, so the stored ones go", () => {
+  it.each([
+    ["every chip was deleted", undefined],
+    ["every record's attachment was removed", context(["gone"])],
+  ])("sends an empty context when %s, so the stored records go", (_, draftContext) => {
     const payload = resolveQueuedEditPayload({
       edit: edit([]),
-      draftContext: undefined,
+      draftContext,
       draftAttachments: [],
       uploaded: [],
     });

@@ -194,8 +194,9 @@ export function endQueuedRunEdit(
 export const startQueuedRunEditSave = queuedRunEdits.startSave;
 
 /**
- * Attachments and context replace wholesale, as on web: an omitted context keeps the stored
- * records, so a save with none left sends an empty list.
+ * Attachments and context replace wholesale; resend kept server attachments with uploads in
+ * composer order. An omitted context keeps the stored records, so a save with none left sends
+ * an empty list.
  */
 export function resolveQueuedEditPayload(input: {
   readonly edit: QueuedRunEdit;
@@ -212,13 +213,12 @@ export function resolveQueuedEditPayload(input: {
     input.draftAttachments,
     input.uploaded,
   );
-  if (rebound === undefined) return { attachments, context: { version: 1, records: [] } };
   const liveIds = new Set(
     attachments.flatMap((attachment) =>
       "id" in attachment && attachment.id ? [attachment.id] : [],
     ),
   );
-  const records = rebound.records.filter(
+  const records = (rebound?.records ?? []).filter(
     (record) => !("attachmentId" in record) || liveIds.has(record.attachmentId),
   );
   return { attachments, context: { version: 1, records } };
