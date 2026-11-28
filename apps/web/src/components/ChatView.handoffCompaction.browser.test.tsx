@@ -156,6 +156,7 @@ it("drops the compact offer on a cold Claude thread while /clear is armed", asyn
   const editor = page.getByTestId("composer-editor");
   await userEvent.click(editor);
   await userEvent.type(editor, "/clear");
+  await expect.element(page.getByRole("button", { name: "Submit message" })).toBeVisible();
   await userEvent.keyboard("{Enter}");
   await expect.element(page.getByText("Your next message starts a fresh session")).toBeVisible();
   await expect.element(chip).not.toBeInTheDocument();

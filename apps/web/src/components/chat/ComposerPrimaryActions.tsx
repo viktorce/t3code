@@ -70,6 +70,7 @@ interface ComposerPrimaryActionsProps {
   hideCompactToggle?: boolean;
   keepFullHistory?: boolean;
   onToggleKeepFullHistory?: () => void;
+  draftRunsLocally?: boolean;
 }
 
 const formatPendingPrimaryActionLabel = (
@@ -261,6 +262,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   hideCompactToggle = false,
   keepFullHistory = false,
   onToggleKeepFullHistory,
+  draftRunsLocally = false,
 }: ComposerPrimaryActionsProps) {
   const gt = useGT();
   const m = useMessages();
@@ -387,7 +389,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     compactBeforeSendTokens !== null && !showResume && !isEditingQueuedMessage
       ? formatContextWindowTokens(compactBeforeSendTokens)
       : null;
-  const compactsBeforeSend = compactTokens !== null && !keepFullHistory;
+  const compactsBeforeSend = compactTokens !== null && !keepFullHistory && !draftRunsLocally;
 
   const submitLabel = showResume
     ? gt("Resume thread")

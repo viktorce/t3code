@@ -4265,6 +4265,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     hideCompactToggle={dictationTakesFooter}
                     keepFullHistory={props.keepFullHistory}
                     onToggleKeepFullHistory={props.onToggleKeepFullHistory}
+                    draftRunsLocally={draftRunsLocally}
                   >
                     {speechInput.available ? (
                       <>
